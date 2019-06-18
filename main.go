@@ -15,10 +15,10 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -30,14 +30,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/urfave/cli"
 )
 
 var (
-	region   = flag.String("region", "us-east-1", "the region to query")
-	taglist  = flag.String("instance-tags", "", "comma seperated list of tag keys to use as metric labels")
-	duration = flag.Duration("duration", time.Minute*4, "How often to query the API")
-	port     = flag.String("port", ":9190", "port to listen on")
-
 	riLabels = []string{
 		"az",
 		"scope",
@@ -130,6 +126,13 @@ var (
 		sphLabels)
 )
 
+type options struct {
+	region       string
+	addr         string
+	instanceTags string
+	duration     time.Duration
+}
+
 func getInstanceTypeDetails(instanceType string) (string, string) {
 	if instanceType == "" {
 		return "", ""
@@ -184,10 +187,10 @@ var instanceLabelsCache = map[string]prometheus.Labels{}
 var instanceLabelsCacheIsVPC = map[string]bool{}
 
 func main() {
-	flag.Parse()
+	options := &options{}
 
 	tagl := []string{}
-	for _, tstr := range strings.Split(*taglist, ",") {
+	for _, tstr := range strings.Split(options.instanceTags, ",") {
 		ctag := tagname(tstr)
 		instanceTags[tstr] = ctag
 		tagl = append(tagl, ctag)
@@ -232,25 +235,63 @@ func main() {
 	prometheus.Register(siBlockHourlyPrice)
 	prometheus.Register(sphPrice)
 
-	sess, err := session.NewSession()
-	if err != nil {
-		log.Fatalf("failed to create session %v\n", err)
+	app := cli.NewApp()
+
+	app.Flags = []cli.Flag{
+		cli.StringFlag{
+			Name:        "region",
+			Value:       "us-east-1",
+			Usage:       "the region to query",
+			EnvVar:      "REGION",
+			Destination: &options.region,
+		},
+		cli.StringFlag{
+			Name:        "instance-tags",
+			Usage:       "comma seperated list of tag keys to use as metric labels",
+			EnvVar:      "INSTANCE_TAGS",
+			Destination: &options.instanceTags,
+		},
+		cli.DurationFlag{
+			Name:        "duration",
+			Value:       time.Minute * 4,
+			Usage:       "How often to query the API",
+			EnvVar:      "DURATION",
+			Destination: &options.duration,
+		},
+		cli.StringFlag{
+			Name:        "addr",
+			Value:       ":9190",
+			Usage:       "addr to listen on",
+			EnvVar:      "ADDR",
+			Destination: &options.addr,
+		},
 	}
 
-	svc := ec2.New(sess, &aws.Config{Region: aws.String(*region)})
-
-	go func() {
-		for {
-			instances(svc, *region)
-			go reservations(svc, *region)
-			go spots(svc, *region)
-			<-time.After(*duration)
+	app.Action = func(c *cli.Context) error {
+		sess, err := session.NewSession()
+		if err != nil {
+			return fmt.Errorf("failed to create session %v", err)
 		}
-	}()
 
-	http.Handle("/metrics", prometheus.Handler())
+		svc := ec2.New(sess, &aws.Config{Region: aws.String(options.region)})
 
-	log.Println(http.ListenAndServe(*port, nil))
+		go func() {
+			for {
+				instances(svc, options.region)
+				go reservations(svc, options.region)
+				go spots(svc, options.region)
+				<-time.After(options.duration)
+			}
+		}()
+
+		http.Handle("/metrics", prometheus.Handler())
+
+		return http.ListenAndServe(options.addr, nil)
+	}
+
+	if err := app.Run(os.Args); err != nil {
+		log.Fatal(err)
+	}
 }
 func instances(svc *ec2.EC2, awsRegion string) {
 	instanceLabelsCacheMutex.Lock()
