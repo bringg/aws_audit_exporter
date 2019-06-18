@@ -1,8 +1,12 @@
 FROM golang:1.12-alpine as builder
 LABEL maintainer "Elad Dolev <dolevelad@gmail.com>"
 
+WORKDIR /tmp
+
 RUN apk add --no-cache git \
-    && go get -u -v github.com/EladDolev/aws_audit_exporter
+    && git clone https://github.com/EladDolev/aws_audit_exporter \
+    && cd aws_audit_exporter \
+    && go install
 
 FROM alpine:3.9
 LABEL maintainer "Elad Dolev <dolevelad@gmail.com>"
