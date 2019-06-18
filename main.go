@@ -33,10 +33,10 @@ import (
 )
 
 var (
-	region  = flag.String("region", "eu-west-1", "the region to query")
-	taglist = flag.String("instance-tags", "", "comma seperated list of tag keys to use as metric labels")
-	dur     = flag.Duration("duration", time.Minute*4, "How often to query the API")
-	addr    = flag.String("addr", ":9190", "port to listen on")
+	region   = flag.String("region", "us-east-1", "the region to query")
+	taglist  = flag.String("instance-tags", "", "comma seperated list of tag keys to use as metric labels")
+	duration = flag.Duration("duration", time.Minute*4, "How often to query the API")
+	port     = flag.String("port", ":9190", "port to listen on")
 
 	riLabels = []string{
 		"az",
@@ -45,7 +45,32 @@ var (
 		"instance_type",
 		"offer_type",
 		"product",
+		"family",
+		"state",
+		"units",
+		"end_date",
+		"id",
+		"duration",
 	}
+
+	riFixedPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "aws_ec2_reserved_instances_fixed_unit_price",
+		Help: "The purchase price of the reservation per normalization unit",
+	},
+		riLabels)
+
+	riHourlyPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "aws_ec2_reserved_instances_hourly_unit_price",
+		Help: "The reccuring charges per hour of the reservation per normalization unit",
+	},
+		riLabels)
+
+	riTotalNormalizationUnits = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "aws_ec2_reserved_instances_normalization_units_total",
+		Help: "Number of total normalization units in this reservation",
+	},
+		riLabels)
+
 	riInstanceCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "aws_ec2_reserved_instances_count",
 		Help: "Number of reserved instances in this reservation",
@@ -58,6 +83,8 @@ var (
 		"instance_type",
 		"product",
 		"state",
+		"family",
+		"units",
 	}
 
 	rilInstanceCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -73,6 +100,8 @@ var (
 		"az",
 		"instance_type",
 		"lifecycle",
+		"family",
+		"units",
 	}
 
 	siLabels = []string{
@@ -82,12 +111,16 @@ var (
 		"instance_type",
 		"launch_group",
 		"instance_profile",
+		"family",
+		"units",
 	}
 
 	sphLabels = []string{
 		"az",
 		"product",
 		"instance_type",
+		"family",
+		"units",
 	}
 
 	sphPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -97,9 +130,45 @@ var (
 		sphLabels)
 )
 
+func getInstanceTypeDetails(instanceType string) (string, string) {
+	if instanceType == "" {
+		return "", ""
+	}
+	arr := regexp.MustCompile(`\.`).Split(instanceType, 2)
+	family, size := arr[0], arr[1]
+	var units string
+	switch size {
+	case "metal":
+		units = "192"
+	case "nano":
+		units = "0.25"
+	case "micro":
+		units = "0.5"
+	case "small":
+		units = "1"
+	case "medium":
+		units = "2"
+	case "large":
+		units = "4"
+	case "xlarge":
+		units = "8"
+	default:
+		multiplierString := regexp.MustCompile(`xlarge`).Split(size, 2)[0]
+		multiplier, err := strconv.Atoi(multiplierString)
+		if err != nil {
+			fmt.Println("there was an error in breaking instance type into family and units", err.Error())
+			log.Fatal(err.Error())
+		}
+		units = strconv.Itoa(8 * multiplier)
+	}
+
+	return family, units
+}
+
 // We have to construct the set of tags for this based on the program
 // args, so it is created in main
 var instancesCount *prometheus.GaugeVec
+var instancesNormalizationUnits *prometheus.GaugeVec
 var instanceTags = map[string]string{}
 
 // Similarly, we want to use the instance labels in the spot instance
@@ -125,7 +194,13 @@ func main() {
 	}
 	instancesCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "aws_ec2_instances_count",
-		Help: "End time of this reservation",
+		Help: "Running EC2 instances count",
+	},
+		append(instancesLabels, tagl...))
+
+	instancesNormalizationUnits = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "aws_ec2_instances_normalization_units_total",
+		Help: "Running EC2 instances total normalization units",
 	},
 		append(instancesLabels, tagl...))
 
@@ -146,8 +221,12 @@ func main() {
 		append(siLabels, tagl...))
 
 	prometheus.Register(instancesCount)
+	prometheus.Register(instancesNormalizationUnits)
+	prometheus.Register(riTotalNormalizationUnits)
 	prometheus.Register(riInstanceCount)
 	prometheus.Register(rilInstanceCount)
+	prometheus.Register(riHourlyPrice)
+	prometheus.Register(riFixedPrice)
 	prometheus.Register(siCount)
 	prometheus.Register(siBidPrice)
 	prometheus.Register(siBlockHourlyPrice)
@@ -165,13 +244,13 @@ func main() {
 			instances(svc, *region)
 			go reservations(svc, *region)
 			go spots(svc, *region)
-			<-time.After(*dur)
+			<-time.After(*duration)
 		}
 	}()
 
 	http.Handle("/metrics", prometheus.Handler())
 
-	log.Println(http.ListenAndServe(*addr, nil))
+	log.Println(http.ListenAndServe(*port, nil))
 }
 func instances(svc *ec2.EC2, awsRegion string) {
 	instanceLabelsCacheMutex.Lock()
@@ -196,6 +275,7 @@ func instances(svc *ec2.EC2, awsRegion string) {
 	}
 
 	instancesCount.Reset()
+	instancesNormalizationUnits.Reset()
 	labels := prometheus.Labels{}
 	for _, r := range resp.Reservations {
 		groups := []string{}
@@ -212,13 +292,14 @@ func instances(svc *ec2.EC2, awsRegion string) {
 		for _, ins := range r.Instances {
 			labels["az"] = *ins.Placement.AvailabilityZone
 			labels["instance_type"] = *ins.InstanceType
+			labels["family"], labels["units"] = getInstanceTypeDetails(*ins.InstanceType)
 			labels["lifecycle"] = "normal"
 			if ins.InstanceLifecycle != nil {
 				labels["lifecycle"] = *ins.InstanceLifecycle
 			}
 			instanceLabelsCache[*ins.InstanceId] = prometheus.Labels{}
 			for _, label := range instanceTags {
-				labels[label] = ""
+				labels[label] = "none"
 				instanceLabelsCache[*ins.InstanceId][label] = ""
 			}
 			for _, tag := range ins.Tags {
@@ -232,6 +313,12 @@ func instances(svc *ec2.EC2, awsRegion string) {
 				instanceLabelsCacheIsVPC[*ins.InstanceId] = true
 			}
 			instancesCount.With(labels).Inc()
+			units, err := strconv.Atoi(labels["units"])
+			if err != nil {
+				fmt.Println("there was an error converting normalization units from string to an int")
+				return
+			}
+			instancesNormalizationUnits.With(labels).Add(float64(units))
 		}
 	}
 }
@@ -242,22 +329,9 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 
 	labels := prometheus.Labels{}
 	riInstanceCount.Reset()
-	for iid, ils := range instanceLabelsCache {
-		labels["scope"] = ils["Availability Zone"]
-		labels["az"] = ils["az"]
-		labels["instance_type"] = ils["instance_type"]
-		labels["tenancy"] = "default"
-		labels["offer_type"] = "No Upfront"
-		labels["product"] = "Linux/UNIX"
-		if _, ok := instanceLabelsCacheIsVPC[iid]; ok {
-			labels["product"] += " (Amazon VPC)"
-		}
-		riInstanceCount.With(labels).Set(0)
-
-		labels["scope"] = ils["Region"]
-		labels["az"] = ils["none"]
-		riInstanceCount.With(labels).Set(0)
-	}
+	riTotalNormalizationUnits.Reset()
+	riHourlyPrice.Reset()
+	riFixedPrice.Reset()
 
 	params := &ec2.DescribeReservedInstancesInput{
 		Filters: []*ec2.Filter{
@@ -282,12 +356,27 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 			labels["az"] = *r.AvailabilityZone
 		}
 		labels["instance_type"] = *r.InstanceType
+		labels["family"], labels["units"] = getInstanceTypeDetails(*r.InstanceType)
 		labels["tenancy"] = *r.InstanceTenancy
 		labels["offer_type"] = *r.OfferingType
 		labels["product"] = *r.ProductDescription
+		labels["state"] = *r.State
+		labels["duration"] = strconv.FormatInt(*r.Duration, 10)
+		labels["id"] = *r.ReservedInstancesId
+		labels["end_date"] = (*r.End).Format("2006-01-02 15:04:05")
 		ris[*r.ReservedInstancesId] = r
 
 		riInstanceCount.With(labels).Add(float64(*r.InstanceCount))
+
+		units, err := strconv.Atoi(labels["units"])
+		if err != nil {
+			fmt.Println("there was an error converting normalization units from string to an int")
+			return
+		}
+		riTotalNormalizationUnits.With(labels).Add(float64(*r.InstanceCount * int64(units)))
+		// TODO: validate this is hourly !!
+		riHourlyPrice.With(labels).Add(*r.RecurringCharges[0].Amount / float64(units))
+		riFixedPrice.With(labels).Add(*r.FixedPrice / float64(units))
 	}
 
 	rilparams := &ec2.DescribeReservedInstancesListingsInput{
@@ -314,6 +403,7 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 			labels["az"] = *r.AvailabilityZone
 		}
 		labels["instance_type"] = *r.InstanceType
+		labels["family"], labels["units"] = getInstanceTypeDetails(*r.InstanceType)
 		labels["product"] = *r.ProductDescription
 
 		for _, s := range []string{"available", "sold", "cancelled", "pending"} {
@@ -336,6 +426,7 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 			labels["az"] = *r.AvailabilityZone
 		}
 		labels["instance_type"] = *r.InstanceType
+		labels["family"], labels["units"] = getInstanceTypeDetails(*r.InstanceType)
 		labels["product"] = *r.ProductDescription
 
 		for _, ic := range ril.InstanceCounts {
@@ -401,8 +492,11 @@ func spots(svc *ec2.EC2, awsRegion string) {
 		}
 
 		labels["instance_type"] = "unknown"
+		labels["family"] = "unknown"
+		labels["units"] = "unknown"
 		if r.LaunchSpecification != nil && r.LaunchSpecification.InstanceType != nil {
 			labels["instance_type"] = *r.LaunchSpecification.InstanceType
+			labels["family"], labels["units"] = getInstanceTypeDetails(*r.LaunchSpecification.InstanceType)
 		}
 
 		labels["instance_profile"] = "unknown"
@@ -454,6 +548,7 @@ func spots(svc *ec2.EC2, awsRegion string) {
 				spLabels["az"] = *sp.AvailabilityZone
 				spLabels["product"] = *sp.ProductDescription
 				spLabels["instance_type"] = *sp.InstanceType
+				spLabels["family"], spLabels["units"] = getInstanceTypeDetails(*sp.InstanceType)
 				if sp.SpotPrice != nil {
 					if f, err := strconv.ParseFloat(*sp.SpotPrice, 64); err == nil {
 						sphPrice.With(spLabels).Set(f)
