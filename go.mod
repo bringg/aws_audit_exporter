@@ -1,4 +1,4 @@
-module github.com/QubitProducts/aws_audit_exporter
+module github.com/EladDolev/aws_audit_exporter
 
 require (
 	github.com/aws/aws-sdk-go v1.19.41
