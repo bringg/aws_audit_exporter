@@ -52,6 +52,7 @@ type Instances struct {
 	AwsRegion           string
 	InstanceLabelsCache *map[string]prometheus.Labels
 	InstanceTags        map[string]string
+	IsVPC               *map[string]bool
 }
 
 // GetInstancesInfo gets instances information
@@ -106,6 +107,9 @@ func (s *Instances) GetInstancesInfo() {
 					labels[label] = *tag.Value
 					(*s.InstanceLabelsCache)[*ins.InstanceId][label] = *tag.Value
 				}
+			}
+			if ins.VpcId != nil {
+				(*s.IsVPC)[*ins.InstanceId] = true
 			}
 			instancesCount.With(labels).Inc()
 			units, err := strconv.Atoi(labels["units"])

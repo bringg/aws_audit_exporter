@@ -75,6 +75,7 @@ type Spots struct {
 	Svc                 *ec2.EC2
 	AwsRegion           string
 	InstanceLabelsCache *map[string]prometheus.Labels
+	IsVPC               *map[string]bool
 }
 
 // GetSpotsInfo gets spot instances information
@@ -113,6 +114,9 @@ func (s *Spots) GetSpotsInfo() {
 		labels["az"] = *r.LaunchedAvailabilityZone
 
 		product := *r.ProductDescription
+		if isVpc, ok := (*s.IsVPC)[*r.InstanceId]; ok && isVpc {
+			product += " (Amazon VPC)"
+		}
 		labels["product"] = product
 		productSeen[product] = true
 

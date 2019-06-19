@@ -46,6 +46,7 @@ var tagl = []string{}
 // We'll cache the instance tag labels so that we can use them to separate
 // out spot instance spend
 var instanceLabelsCache = map[string]prometheus.Labels{}
+var isVPC = map[string]bool{}
 
 func main() {
 	options := &options{}
@@ -104,6 +105,7 @@ func main() {
 				AwsRegion:           options.region,
 				InstanceLabelsCache: &instanceLabelsCache,
 				InstanceTags:        instanceTags,
+				IsVPC:               &isVPC,
 			}
 			reservations := &billing.Reservations{
 				Svc:       svc,
@@ -113,6 +115,7 @@ func main() {
 				Svc:                 svc,
 				AwsRegion:           options.region,
 				InstanceLabelsCache: &instanceLabelsCache,
+				IsVPC:               &isVPC,
 			}
 
 			billing.RegisterInstancesMetrics(tagl)
