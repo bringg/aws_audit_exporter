@@ -38,7 +38,7 @@ The following labels are exposed:
  - *family*: Instance family
  - *id*: The reservation id
  - *instance_type*: Type of instance
- - *offer_type*:
+ - *offer_type*: The Reserved Instance offering type (No Upfront | Partial Upfront | All Upfront)
  - *product*: The product description
  - *scope*: Region or Availability Zone
  - *state*: The state of the Reserved Instance (payment-pending | active | payment-failed)
