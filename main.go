@@ -188,53 +188,6 @@ var instanceLabelsCacheIsVPC = map[string]bool{}
 
 func main() {
 	options := &options{}
-
-	tagl := []string{}
-	for _, tstr := range strings.Split(options.instanceTags, ",") {
-		ctag := tagname(tstr)
-		instanceTags[tstr] = ctag
-		tagl = append(tagl, ctag)
-	}
-	instancesCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "aws_ec2_instances_count",
-		Help: "Running EC2 instances count",
-	},
-		append(instancesLabels, tagl...))
-
-	instancesNormalizationUnits = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "aws_ec2_instances_normalization_units_total",
-		Help: "Running EC2 instances total normalization units",
-	},
-		append(instancesLabels, tagl...))
-
-	siCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "aws_ec2_spot_request_count",
-		Help: "Number of active/fullfilled spot requests",
-	},
-		append(siLabels, tagl...))
-	siBidPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "aws_ec2_spot_request_bid_price_hourly_dollars",
-		Help: "cost of spot instances hourly usage in dollars",
-	},
-		append(siLabels, tagl...))
-	siBlockHourlyPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "aws_ec2_spot_request_actual_block_price_hourly_dollars",
-		Help: "fixed hourly cost of limited duration spot instances in dollars",
-	},
-		append(siLabels, tagl...))
-
-	prometheus.Register(instancesCount)
-	prometheus.Register(instancesNormalizationUnits)
-	prometheus.Register(riTotalNormalizationUnits)
-	prometheus.Register(riInstanceCount)
-	prometheus.Register(rilInstanceCount)
-	prometheus.Register(riHourlyPrice)
-	prometheus.Register(riFixedPrice)
-	prometheus.Register(siCount)
-	prometheus.Register(siBidPrice)
-	prometheus.Register(siBlockHourlyPrice)
-	prometheus.Register(sphPrice)
-
 	app := cli.NewApp()
 
 	app.Flags = []cli.Flag{
@@ -268,6 +221,57 @@ func main() {
 	}
 
 	app.Action = func(c *cli.Context) error {
+
+		tagl := []string{}
+
+		for _, tstr := range strings.Split(options.instanceTags, ",") {
+			ctag := tagname(tstr)
+			instanceTags[tstr] = ctag
+			tagl = append(tagl, ctag)
+		}
+
+		instancesCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "aws_ec2_instances_count",
+			Help: "Running EC2 instances count",
+		},
+			append(instancesLabels, tagl...))
+
+		instancesNormalizationUnits = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "aws_ec2_instances_normalization_units_total",
+			Help: "Running EC2 instances total normalization units",
+		},
+			append(instancesLabels, tagl...))
+
+		siCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "aws_ec2_spot_request_count",
+			Help: "Number of active/fullfilled spot requests",
+		},
+			append(siLabels, tagl...))
+
+		siBidPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "aws_ec2_spot_request_bid_price_hourly_dollars",
+			Help: "cost of spot instances hourly usage in dollars",
+		},
+			append(siLabels, tagl...))
+
+		siBlockHourlyPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "aws_ec2_spot_request_actual_block_price_hourly_dollars",
+			Help: "fixed hourly cost of limited duration spot instances in dollars",
+		},
+			append(siLabels, tagl...))
+
+		prometheus.Register(instancesCount)
+		prometheus.Register(instancesNormalizationUnits)
+		prometheus.Register(riTotalNormalizationUnits)
+		prometheus.Register(riInstanceCount)
+		prometheus.Register(rilInstanceCount)
+		prometheus.Register(riHourlyPrice)
+		prometheus.Register(riFixedPrice)
+		prometheus.Register(siCount)
+		prometheus.Register(siBidPrice)
+		prometheus.Register(siBlockHourlyPrice)
+		prometheus.Register(sphPrice)
+
 		sess, err := session.NewSession()
 		if err != nil {
 			return fmt.Errorf("failed to create session %v", err)
