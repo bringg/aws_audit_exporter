@@ -102,8 +102,11 @@ func (s *Reservations) GetReservationsInfo() {
 	params := &ec2.DescribeReservedInstancesInput{
 		Filters: []*ec2.Filter{
 			{
-				Name:   aws.String("state"),
-				Values: []*string{aws.String("active")},
+				Name: aws.String("state"),
+				Values: []*string{aws.String("active"),
+					aws.String("payment-pending"),
+					aws.String("payment-failed"),
+				},
 			},
 		},
 	}
