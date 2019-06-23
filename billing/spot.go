@@ -78,7 +78,6 @@ type Spots struct {
 	Svc                 *ec2.EC2
 	AwsRegion           string
 	InstanceLabelsCache *map[string]prometheus.Labels
-	IsVPC               *map[string]bool
 }
 
 // GetSpotsInfo gets spot instances information
@@ -112,9 +111,6 @@ func (s *Spots) GetSpotsInfo() {
 		labels["status"] = *r.Status.Message
 
 		product := *r.ProductDescription
-		if isVpc, ok := (*s.IsVPC)[*r.InstanceId]; ok && isVpc {
-			product += " (Amazon VPC)"
-		}
 		labels["product"] = product
 		productSeen[product] = true
 
@@ -163,20 +159,15 @@ func (s *Spots) GetSpotsInfo() {
 	// This is silly, but spot instances requests don't seem to include the vpc case
 	pList := []*string{}
 	for p := range productSeen {
-		pp := p
+		// always requesting VPC. Regions that doesn't have them will return the regular ones
+		pp := p + " (Amazon VPC)"
 		pList = append(pList, &pp)
 	}
 
 	phParams := &ec2.DescribeSpotPriceHistoryInput{
-		StartTime: aws.Time(time.Now()),
-		EndTime:   aws.Time(time.Now()),
-		//		ProductDescriptions: pList,
-		Filters: []*ec2.Filter{
-			{
-				Name:   aws.String("product-description"),
-				Values: pList,
-			},
-		},
+		StartTime:           aws.Time(time.Now()),
+		EndTime:             aws.Time(time.Now()),
+		ProductDescriptions: pList,
 	}
 	err = s.Svc.DescribeSpotPriceHistoryPages(phParams,
 		func(page *ec2.DescribeSpotPriceHistoryOutput, lastPage bool) bool {
