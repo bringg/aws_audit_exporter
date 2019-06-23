@@ -20,6 +20,9 @@ var (
 		"launch_group",
 		"persistence",
 		"product",
+		"request_id",
+		"state",
+		"status",
 		"units",
 	}
 
@@ -81,15 +84,7 @@ type Spots struct {
 // GetSpotsInfo gets spot instances information
 func (s *Spots) GetSpotsInfo() {
 
-	params := &ec2.DescribeSpotInstanceRequestsInput{
-		Filters: []*ec2.Filter{
-			{
-				Name:   aws.String("state"),
-				Values: []*string{aws.String("active")},
-			},
-		},
-	}
-	resp, err := s.Svc.DescribeSpotInstanceRequests(params)
+	resp, err := s.Svc.DescribeSpotInstanceRequests(&ec2.DescribeSpotInstanceRequestsInput{})
 	if err != nil {
 		fmt.Println("there was an error listing spot requests", s.AwsRegion, err.Error())
 		log.Fatal(err.Error())
@@ -112,6 +107,9 @@ func (s *Spots) GetSpotsInfo() {
 		}
 
 		labels["az"] = *r.LaunchedAvailabilityZone
+		labels["request_id"] = *r.SpotInstanceRequestId
+		labels["state"] = *r.State
+		labels["status"] = *r.Status.Message
 
 		product := *r.ProductDescription
 		if isVpc, ok := (*s.IsVPC)[*r.InstanceId]; ok && isVpc {

@@ -17,6 +17,7 @@ var (
 		"family",
 		"id",
 		"instance_type",
+		"offer_class",
 		"offer_type",
 		"product",
 		"scope",
@@ -126,6 +127,7 @@ func (s *Reservations) GetReservationsInfo() {
 		labels["family"], labels["units"] = getInstanceTypeDetails(*r.InstanceType)
 		labels["id"] = *r.ReservedInstancesId
 		labels["instance_type"] = *r.InstanceType
+		labels["offer_class"] = *r.OfferingClass
 		labels["offer_type"] = *r.OfferingType
 		labels["product"] = *r.ProductDescription
 		labels["state"] = *r.State
