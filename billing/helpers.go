@@ -8,6 +8,28 @@ import (
 	"strings"
 )
 
+func getShortenedSpotMessage(message string) string {
+	x := "unknown"
+	if strings.Contains(message, "Spot Instance terminated due to user-initiated termination") {
+		x = "user-initiated termination"
+		return x
+	}
+	if strings.Contains(message, "Your Spot request is canceled, but your instance") {
+		return "canceled still running"
+	}
+	if message == "Your spot request is fulfilled." {
+		return "request fulfilled"
+	}
+	if message == "Your Spot instance was terminated because there is no Spot capacity available that matches your request." {
+		return "no capacity termination"
+	}
+	// never seen this message before
+	if strings.Contains(message, "canceled") {
+		return "canceled and terminated"
+	}
+	return x
+}
+
 func getInstanceTypeDetails(instanceType string) (string, string) {
 	if instanceType == "" {
 		return "", ""

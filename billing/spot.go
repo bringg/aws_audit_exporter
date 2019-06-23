@@ -14,6 +14,7 @@ import (
 var (
 	siLabels = []string{
 		"az",
+		"block_duration",
 		"family",
 		"instance_profile",
 		"instance_type",
@@ -21,6 +22,7 @@ var (
 		"persistence",
 		"product",
 		"request_id",
+		"short_status",
 		"state",
 		"status",
 		"units",
@@ -109,6 +111,7 @@ func (s *Spots) GetSpotsInfo() {
 		labels["request_id"] = *r.SpotInstanceRequestId
 		labels["state"] = *r.State
 		labels["status"] = *r.Status.Message
+		labels["short_status"] = getShortenedSpotMessage(*r.Status.Message)
 
 		product := *r.ProductDescription
 		labels["product"] = product
@@ -137,21 +140,19 @@ func (s *Spots) GetSpotsInfo() {
 			labels["instance_profile"] = *r.LaunchSpecification.IamInstanceProfile.Name
 		}
 
-		price := 0.0
+		labels["block_duration"] = "none"
 		if r.ActualBlockHourlyPrice != nil {
-			if f, err := strconv.ParseFloat(*r.ActualBlockHourlyPrice, 64); err == nil {
-				price = f
+			labels["block_duration"] = strconv.FormatInt(*r.BlockDurationMinutes, 10)
+			if price, err := strconv.ParseFloat(*r.ActualBlockHourlyPrice, 64); err == nil {
+				siBlockHourlyPrice.With(labels).Add(price)
 			}
 		}
-		siBlockHourlyPrice.With(labels).Add(price)
 
-		price = 0
 		if r.SpotPrice != nil {
-			if f, err := strconv.ParseFloat(*r.SpotPrice, 64); err == nil {
-				price = f
+			if price, err := strconv.ParseFloat(*r.SpotPrice, 64); err == nil {
+				siBidPrice.With(labels).Add(price)
 			}
 		}
-		siBidPrice.With(labels).Add(price)
 
 		siCount.With(labels).Inc()
 	}
