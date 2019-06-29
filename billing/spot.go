@@ -80,6 +80,7 @@ type Spots struct {
 	Svc                 *ec2.EC2
 	AwsRegion           string
 	InstanceLabelsCache *map[string]prometheus.Labels
+	IsVPC               bool
 }
 
 // GetSpotsInfo gets spot instances information
@@ -114,8 +115,13 @@ func (s *Spots) GetSpotsInfo() {
 		labels["short_status"] = getShortenedSpotMessage(*r.Status.Message)
 
 		product := *r.ProductDescription
-		labels["product"] = product
-		productSeen[product] = true
+		if s.IsVPC {
+			productSeen[product+" (Amazon VPC)"] = true
+			labels["product"] = product + " (Amazon VPC)"
+		} else {
+			productSeen[product] = true
+			labels["product"] = product
+		}
 
 		labels["persistence"] = "one-time"
 		if r.Type != nil {
@@ -157,12 +163,10 @@ func (s *Spots) GetSpotsInfo() {
 		siCount.With(labels).Inc()
 	}
 
-	// This is silly, but spot instances requests don't seem to include the vpc case
+	// productSeen was used as a set. putting everything in a string slice
 	pList := []*string{}
 	for p := range productSeen {
-		// always requesting VPC. Regions that doesn't have them will return the regular ones
-		pp := p + " (Amazon VPC)"
-		pList = append(pList, &pp)
+		pList = append(pList, &p)
 	}
 
 	phParams := &ec2.DescribeSpotPriceHistoryInput{

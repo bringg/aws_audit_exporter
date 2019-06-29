@@ -6,7 +6,27 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/aws/aws-sdk-go/service/ec2"
 )
+
+// IsClassicLink returns true if VPC Classic Link is enabled
+func IsClassicLink(svc *ec2.EC2) bool {
+	var resp *ec2.DescribeVpcClassicLinkOutput
+	var err error
+	if resp, err = svc.DescribeVpcClassicLink(&ec2.DescribeVpcClassicLinkInput{}); err != nil {
+		fmt.Println("there was an error describing vpc")
+		log.Fatal(err.Error())
+	}
+
+	for _, r := range resp.Vpcs {
+		if *r.ClassicLinkEnabled == true {
+			return true
+		}
+	}
+
+	return false
+}
 
 func getShortenedSpotMessage(message string) string {
 	x := "unknown"

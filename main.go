@@ -113,6 +113,7 @@ func main() {
 				Svc:                 svc,
 				AwsRegion:           options.region,
 				InstanceLabelsCache: &instanceLabelsCache,
+				IsVPC:               billing.IsClassicLink(svc),
 			}
 
 			billing.RegisterInstancesMetrics(tagl)
