@@ -105,3 +105,27 @@ The following labels are exposed:
         comma seperated list of tag keys to use as metric labels
   -region string
         the region to query (default "us-east-1")
+
+# IAM Role
+
+Below is an IAM role with the required permissions
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeReservedInstances*",
+        "ec2:DescribeSpot*",
+        "ec2:DescribeVpcClassicLink"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Effect": "Allow"
+    }
+  ]
+}
+```
