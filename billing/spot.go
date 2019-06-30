@@ -63,24 +63,27 @@ func RegisterSpotsMetrics(tagList []string) {
 	},
 		append(siLabels, tagList...))
 
+	prometheus.Register(siBidPrice)
+	prometheus.Register(siBlockHourlyPrice)
+	prometheus.Register(siCount)
+}
+
+// RegisterSpotsMetrics2 constructs and registers Prometheus metrics
+func RegisterSpotsMetrics2() {
+
 	sphPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "aws_ec2_spot_price_per_hour_dollars",
 		Help: "Current market price of a spot instance, per hour,  in dollars",
 	},
 		sphLabels)
 
-	prometheus.Register(siBidPrice)
-	prometheus.Register(siBlockHourlyPrice)
-	prometheus.Register(siCount)
 	prometheus.Register(sphPrice)
 }
 
 // Spots parameters to be passed from main
 type Spots struct {
 	Svc                 *ec2.EC2
-	AwsRegion           string
 	InstanceLabelsCache *map[string]prometheus.Labels
-	IsVPC               bool
 }
 
 // GetSpotsInfo gets spot instances information
@@ -88,11 +91,9 @@ func (s *Spots) GetSpotsInfo() {
 
 	resp, err := s.Svc.DescribeSpotInstanceRequests(&ec2.DescribeSpotInstanceRequestsInput{})
 	if err != nil {
-		fmt.Println("there was an error listing spot requests", s.AwsRegion, err.Error())
+		fmt.Println("there was an error listing spot requests")
 		log.Fatal(err.Error())
 	}
-
-	productSeen := map[string]bool{}
 
 	labels := prometheus.Labels{}
 	siBidPrice.Reset()
@@ -113,15 +114,7 @@ func (s *Spots) GetSpotsInfo() {
 		labels["state"] = *r.State
 		labels["status"] = *r.Status.Message
 		labels["short_status"] = getShortenedSpotMessage(*r.Status.Message)
-
-		product := *r.ProductDescription
-		if s.IsVPC {
-			productSeen[product+" (Amazon VPC)"] = true
-			labels["product"] = product + " (Amazon VPC)"
-		} else {
-			productSeen[product] = true
-			labels["product"] = product
-		}
+		labels["product"] = *r.ProductDescription
 
 		labels["persistence"] = "one-time"
 		if r.Type != nil {
@@ -162,19 +155,16 @@ func (s *Spots) GetSpotsInfo() {
 
 		siCount.With(labels).Inc()
 	}
+}
 
-	// productSeen was used as a set. putting everything in a string slice
-	pList := []*string{}
-	for p := range productSeen {
-		pList = append(pList, &p)
-	}
-
+// GetSpotsCurrentPrices gets spot current prices
+func GetSpotsCurrentPrices(svc *ec2.EC2, pList []*string) {
 	phParams := &ec2.DescribeSpotPriceHistoryInput{
 		StartTime:           aws.Time(time.Now()),
 		EndTime:             aws.Time(time.Now()),
 		ProductDescriptions: pList,
 	}
-	err = s.Svc.DescribeSpotPriceHistoryPages(phParams,
+	err := svc.DescribeSpotPriceHistoryPages(phParams,
 		func(page *ec2.DescribeSpotPriceHistoryOutput, lastPage bool) bool {
 			spLabels := prometheus.Labels{}
 			for _, sp := range page.SpotPriceHistory {
@@ -192,7 +182,7 @@ func (s *Spots) GetSpotsInfo() {
 		})
 
 	if err != nil {
-		fmt.Println("there was an error listing spot requests", s.AwsRegion, err.Error())
+		fmt.Println("there was an error listing spot requests")
 		log.Fatal(err.Error())
 	}
 }

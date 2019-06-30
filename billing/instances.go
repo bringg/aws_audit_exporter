@@ -49,7 +49,6 @@ func RegisterInstancesMetrics(tagList []string) {
 // Instances parameters to be passed from main
 type Instances struct {
 	Svc                 *ec2.EC2
-	AwsRegion           string
 	InstanceLabelsCache *map[string]prometheus.Labels
 	InstanceTags        map[string]string
 }
@@ -68,7 +67,7 @@ func (s *Instances) GetInstancesInfo() {
 
 	resp, err := s.Svc.DescribeInstances(params)
 	if err != nil {
-		fmt.Println("there was an error listing instances in", s.AwsRegion, err.Error())
+		fmt.Println("there was an error listing instances", err.Error())
 		log.Fatal(err.Error())
 	}
 

@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -9,6 +10,31 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 )
+
+// GetProductDescriptions maps program OS input to AWS format
+func GetProductDescriptions(osList string, isVPC bool) ([]*string, error) {
+	pList := []*string{}
+	for _, p := range strings.Split(osList, ",") {
+		var osFullName string
+		switch p {
+		case "Linux":
+			osFullName = "Linux/UNIX"
+		case "Windows":
+			osFullName = "Windows"
+		case "SUSE":
+			osFullName = "SUSE Linux"
+		case "RHEL":
+			osFullName = "Red Hat Enterprise Linux"
+		default:
+			return nil, errors.New("supported OSs: Linux Windows SUSE RHEL")
+		}
+		if isVPC {
+			osFullName += " (Amazon VPC)"
+		}
+		pList = append(pList, &osFullName)
+	}
+	return pList, nil
+}
 
 // IsClassicLink returns true if VPC Classic Link is enabled
 func IsClassicLink(svc *ec2.EC2) bool {

@@ -35,6 +35,7 @@ type options struct {
 	addr         string
 	duration     time.Duration
 	instanceTags string
+	spotOS       string
 	region       string
 }
 
@@ -46,6 +47,9 @@ var tagl = []string{}
 // We'll cache the instance tag labels so that we can use them to separate
 // out spot instance spend
 var instanceLabelsCache = map[string]prometheus.Labels{}
+
+// will hold the list of OS (products) for which spot prices should be fetched
+var pList []*string
 
 func main() {
 	options := &options{}
@@ -73,6 +77,13 @@ func main() {
 			Destination: &options.instanceTags,
 		},
 		cli.StringFlag{
+			Name:        "spot-os",
+			Value:       "Linux",
+			Usage:       "comma seperated list of operating systems to get spot price history for [Linux|SUSE|RHEL|Windows]",
+			EnvVar:      "SPOT_OS",
+			Destination: &options.spotOS,
+		},
+		cli.StringFlag{
 			Name:        "region",
 			Value:       "us-east-1",
 			Usage:       "the region to query",
@@ -98,22 +109,27 @@ func main() {
 
 		svc := ec2.New(sess, &aws.Config{Region: aws.String(options.region)})
 
+		if pList, err = billing.GetProductDescriptions(options.spotOS, billing.IsClassicLink(svc)); err != nil {
+			return err
+		}
+
+		go func() {
+			billing.RegisterSpotsMetrics2()
+			for {
+				billing.GetSpotsCurrentPrices(svc, pList)
+				<-time.After(time.Hour)
+			}
+		}()
+
 		go func() {
 			instances := &billing.Instances{
 				Svc:                 svc,
-				AwsRegion:           options.region,
 				InstanceLabelsCache: &instanceLabelsCache,
 				InstanceTags:        instanceTags,
 			}
-			reservations := &billing.Reservations{
-				Svc:       svc,
-				AwsRegion: options.region,
-			}
 			spots := &billing.Spots{
 				Svc:                 svc,
-				AwsRegion:           options.region,
 				InstanceLabelsCache: &instanceLabelsCache,
-				IsVPC:               billing.IsClassicLink(svc),
 			}
 
 			billing.RegisterInstancesMetrics(tagl)
@@ -122,10 +138,11 @@ func main() {
 
 			for {
 				instances.GetInstancesInfo()
-				go reservations.GetReservationsInfo()
+				go billing.GetReservationsInfo(svc)
 				go spots.GetSpotsInfo()
 				<-time.After(options.duration)
 			}
+
 		}()
 
 		http.Handle("/metrics", prometheus.Handler())

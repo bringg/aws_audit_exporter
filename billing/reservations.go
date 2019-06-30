@@ -83,14 +83,8 @@ func RegisterReservationsMetrics() {
 	prometheus.Register(riTotalNormalizationUnits)
 }
 
-// Reservations parameters to be passed from main
-type Reservations struct {
-	Svc       *ec2.EC2
-	AwsRegion string
-}
-
 // GetReservationsInfo gets RIs information
-func (s *Reservations) GetReservationsInfo() {
+func GetReservationsInfo(svc *ec2.EC2) {
 
 	labels := prometheus.Labels{}
 
@@ -111,9 +105,9 @@ func (s *Reservations) GetReservationsInfo() {
 		},
 	}
 
-	resp, err := s.Svc.DescribeReservedInstances(params)
+	resp, err := svc.DescribeReservedInstances(params)
 	if err != nil {
-		fmt.Println("there was an error listing instances in", s.AwsRegion, err.Error())
+		fmt.Println("there was an error listing instances", err.Error())
 	}
 
 	ris := map[string]*ec2.ReservedInstances{}
@@ -158,9 +152,9 @@ func (s *Reservations) GetReservationsInfo() {
 			},
 		},
 	}
-	rilresp, err := s.Svc.DescribeReservedInstancesListings(rilparams)
+	rilresp, err := svc.DescribeReservedInstancesListings(rilparams)
 	if err != nil {
-		fmt.Println("there was an error listing reserved instances listingsin", s.AwsRegion, err.Error())
+		fmt.Println("there was an error listing reserved instances listings", err.Error())
 		return
 	}
 	rilInstanceCount.Reset()
