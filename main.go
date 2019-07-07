@@ -31,16 +31,16 @@ import (
 	"github.com/EladDolev/aws_audit_exporter/billing"
 	"github.com/EladDolev/aws_audit_exporter/debug"
 	"github.com/EladDolev/aws_audit_exporter/postgres"
+	"github.com/EladDolev/aws_audit_exporter/sqlmigrations"
 )
 
 type options struct {
-	addr           string
-	dbURL          string
-	duration       time.Duration
-	instanceTags   string
-	migrationsARGS string
-	region         string
-	spotOS         string
+	addr         string
+	dbURL        string
+	duration     time.Duration
+	instanceTags string
+	region       string
+	spotOS       string
 }
 
 // We have to construct the set of tags for this based on the program
@@ -55,9 +55,65 @@ var instanceLabelsCache = map[string]prometheus.Labels{}
 // will hold the list of OS (products) for which spot prices should be fetched
 var pList []*string
 
+// maintainSchema maintains the schema by running migrations
+func maintainSchema() error {
+	// runs init if gopg_migrations table does not exists
+	if n, err := postgres.DB.Model().
+		Table("pg_tables").
+		Where("schemaname = 'public'").
+		Where("tablename = 'gopg_migrations'").
+		Count(); err != nil {
+		return err
+	} else if n == 0 {
+		if err = sqlmigrations.RunMigrations(postgres.DB, "init"); err != nil {
+			return err
+		}
+	}
+	// running migrations
+	return sqlmigrations.RunMigrations(postgres.DB, "")
+}
+
 func main() {
 	options := &options{}
 	app := cli.NewApp()
+
+	app.Name = "Prometheus AWS audit exporter"
+	app.Version = "0.2.0"
+	app.Usage = "Assists with billing"
+	app.UsageText = "./aws_audit_exporter [global options] [command] [args]"
+
+	app.Commands = []cli.Command{
+		cli.Command{
+			Name:            "migrate",
+			Usage:           "runs migrations on postgres database",
+			Description:     "https://github.com/go-pg/migrations#run-migrations",
+			UsageText:       "./aws_audit_exporter migrate [args]",
+			SkipFlagParsing: false,
+			HideHelp:        false,
+			Hidden:          false,
+			HelpName:        "migrate",
+			Action: func(c *cli.Context) error {
+
+				if len(options.dbURL) == 0 {
+					log.Fatal("must supply dbURL")
+					return fmt.Errorf("must supply dbURL")
+				}
+
+				if err := postgres.ConnectPostgres(options.dbURL); err != nil {
+					log.Fatal(err)
+					return err
+				}
+				defer postgres.DB.Close()
+
+				if err := sqlmigrations.RunMigrations(postgres.DB,
+					strings.Join(c.Args(), " ")); err != nil {
+					log.Fatal(err)
+					return err
+				}
+				return nil
+			},
+		},
+	}
 
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
@@ -91,13 +147,6 @@ func main() {
 			Usage:       "comma seperated list of tag keys to use as metric labels",
 			EnvVar:      "INSTANCE_TAGS",
 			Destination: &options.instanceTags,
-		},
-		cli.StringFlag{
-			Name:        "migrations-args",
-			Value:       "",
-			Usage:       "args to github.com/go-pg/migrations",
-			EnvVar:      "MIGRATIONS_ARGS",
-			Destination: &options.migrationsARGS,
 		},
 		cli.StringFlag{
 			Name:        "region",
@@ -135,16 +184,15 @@ func main() {
 		if pList, err = billing.GetProductDescriptions(options.spotOS, billing.IsClassicLink(svc)); err != nil {
 			return err
 		}
+
 		if len(options.dbURL) > 0 {
-			if err = postgres.ConnectPostgres(options.dbURL); err != nil {
+			if err := postgres.ConnectPostgres(options.dbURL); err != nil {
+				log.Fatal(err)
 				return err
 			}
 			defer postgres.DB.Close()
-			if err = postgres.MaintainSchema(options.migrationsARGS); err != nil {
+			if err := maintainSchema(); err != nil {
 				return err
-			}
-			if len(options.migrationsARGS) > 0 {
-				return nil
 			}
 		}
 

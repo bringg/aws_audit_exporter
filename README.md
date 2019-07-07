@@ -1,7 +1,7 @@
 # Prometheus AWS audit exporter
 
-This program is intended to export various AWS statistics as prometheus
-metrics. It is primarily intended to assist with billing.
+This program is primarily intended to assist with billing.
+Collects various AWS statistics, exports them as prometheus metrics, and saves them in RDBMS.
 
 Run help or check main.go for program parameters
 Debug messages are enabled by default
@@ -148,8 +148,9 @@ Below is an IAM role with the required permissions
 }
 ```
 
-## Postgres support
+## Write data to Postgres
 
+Writes data to postgres to allow longer retention, and data aggregations
 Was tested on postgresql 9.6 in RDS
 
 hstore extention needs to enable on the database in use

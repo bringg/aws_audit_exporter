@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/EladDolev/aws_audit_exporter/debug"
 	"github.com/EladDolev/aws_audit_exporter/models"
-	"github.com/EladDolev/aws_audit_exporter/sqlmigrations"
 )
 
 // DB global variable for postgres connection
@@ -39,35 +37,11 @@ func ConnectPostgres(dbURL string) error {
 		return fmt.Errorf("Failed parsing postgres parameters: %v", err)
 	}
 	if DB = pg.Connect(pgOptions); DB == nil {
-		return errors.New("Failed to open postgres connection")
+		return fmt.Errorf("Failed to open postgres connection")
 	}
 
 	DB.AddQueryHook(dbLogger{})
 	return nil
-}
-
-// MaintainSchema maintains the schema by running migrations
-func MaintainSchema(cmd string) error {
-	// runs init if gopg_migrations table does not exists
-	if n, err := DB.Model().
-		Table("pg_tables").
-		Where("schemaname = 'public'").
-		Where("tablename = 'gopg_migrations'").
-		Count(); err != nil {
-		return err
-	} else if n == 0 {
-		if err = sqlmigrations.RunMigrations(DB, "init"); err != nil {
-			return err
-		}
-	}
-
-	// just return if init was called
-	if cmd == "init" {
-		return nil
-	}
-
-	// running migrations
-	return sqlmigrations.RunMigrations(DB, cmd)
 }
 
 // upsert takes a model, and performs simple upsert
