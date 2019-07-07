@@ -86,6 +86,7 @@ func RegisterSpotsPricesMetrics() {
 type Spots struct {
 	Svc                 *ec2.EC2
 	InstanceLabelsCache *map[string]prometheus.Labels
+	InstanceTags        map[string]string
 }
 
 // GetSpotsInfo gets spot instances information
@@ -107,6 +108,10 @@ func (s *Spots) GetSpotsInfo() {
 			if ilabels, ok := (*s.InstanceLabelsCache)[*r.InstanceId]; ok {
 				for k, v := range ilabels {
 					labels[k] = v
+				}
+			} else {
+				for _, label := range s.InstanceTags {
+					labels[label] = "unknown"
 				}
 			}
 		}

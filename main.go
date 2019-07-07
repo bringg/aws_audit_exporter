@@ -213,6 +213,7 @@ func main() {
 			spots := &billing.Spots{
 				Svc:                 svc,
 				InstanceLabelsCache: &instanceLabelsCache,
+				InstanceTags:        instanceTags,
 			}
 
 			billing.RegisterInstancesMetrics(tagl)
