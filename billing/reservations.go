@@ -2,16 +2,20 @@ package billing
 
 import (
 	"fmt"
+	"log"
 	"strconv"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/EladDolev/aws_audit_exporter/postgres"
 )
 
 var (
 	riLabels = []string{
 		"az",
+		"count",
 		"duration",
 		"end_date",
 		"family",
@@ -20,7 +24,9 @@ var (
 		"offer_class",
 		"offer_type",
 		"product",
+		"region",
 		"scope",
+		"start_date",
 		"state",
 		"tenancy",
 		"units",
@@ -36,6 +42,7 @@ var (
 		"units",
 	}
 
+	riEffectiveHourlyPrice    *prometheus.GaugeVec
 	riFixedPrice              *prometheus.GaugeVec
 	riHourlyPrice             *prometheus.GaugeVec
 	riInstanceCount           *prometheus.GaugeVec
@@ -45,6 +52,12 @@ var (
 
 // RegisterReservationsMetrics constructs and registers Prometheus metrics
 func RegisterReservationsMetrics() {
+
+	riEffectiveHourlyPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "aws_ec2_reserved_instances_effective_unit_price",
+		Help: "The effective price of the reservation per normalization unit",
+	},
+		riLabels)
 
 	riFixedPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "aws_ec2_reserved_instances_fixed_unit_price",
@@ -76,6 +89,7 @@ func RegisterReservationsMetrics() {
 	},
 		riLabels)
 
+	prometheus.Register(riEffectiveHourlyPrice)
 	prometheus.Register(riFixedPrice)
 	prometheus.Register(riHourlyPrice)
 	prometheus.Register(riInstanceCount)
@@ -88,24 +102,13 @@ func GetReservationsInfo(svc *ec2.EC2) {
 
 	labels := prometheus.Labels{}
 
+	riEffectiveHourlyPrice.Reset()
 	riFixedPrice.Reset()
 	riHourlyPrice.Reset()
 	riInstanceCount.Reset()
 	riTotalNormalizationUnits.Reset()
 
-	params := &ec2.DescribeReservedInstancesInput{
-		Filters: []*ec2.Filter{
-			{
-				Name: aws.String("state"),
-				Values: []*string{aws.String("active"),
-					aws.String("payment-pending"),
-					aws.String("payment-failed"),
-				},
-			},
-		},
-	}
-
-	resp, err := svc.DescribeReservedInstances(params)
+	resp, err := svc.DescribeReservedInstances(&ec2.DescribeReservedInstancesInput{})
 	if err != nil {
 		fmt.Println("there was an error listing instances", err.Error())
 	}
@@ -119,6 +122,7 @@ func GetReservationsInfo(svc *ec2.EC2) {
 		} else {
 			labels["az"] = *r.AvailabilityZone
 		}
+		labels["count"] = strconv.FormatInt(*r.InstanceCount, 10)
 		labels["duration"] = strconv.FormatInt(*r.Duration, 10)
 		labels["end_date"] = (*r.End).Format("2006-01-02 15:04:05")
 		labels["family"], labels["units"] = getInstanceTypeDetails(*r.InstanceType)
@@ -127,21 +131,36 @@ func GetReservationsInfo(svc *ec2.EC2) {
 		labels["offer_class"] = *r.OfferingClass
 		labels["offer_type"] = *r.OfferingType
 		labels["product"] = *r.ProductDescription
+		labels["region"] = svc.SigningRegion
+		labels["start_date"] = (*r.Start).Format("2006-01-02 15:04:05")
 		labels["state"] = *r.State
 		labels["tenancy"] = *r.InstanceTenancy
 		ris[*r.ReservedInstancesId] = r
 
 		riInstanceCount.With(labels).Add(float64(*r.InstanceCount))
 
-		units, err := strconv.Atoi(labels["units"])
+		units, err := strconv.ParseFloat(labels["units"], 64)
 		if err != nil {
-			fmt.Println("there was an error converting normalization units from string to an int")
-			return
+			log.Println("There was an error converting normalization units from string to float64")
+			log.Fatal(err.Error())
 		}
 		riTotalNormalizationUnits.With(labels).Add(float64(*r.InstanceCount * int64(units)))
 		// TODO: validate this is hourly !!
-		riHourlyPrice.With(labels).Add(*r.RecurringCharges[0].Amount / float64(units))
-		riFixedPrice.With(labels).Add(*r.FixedPrice / float64(units))
+		RC := 0.0
+		if len(r.RecurringCharges) > 0 {
+			RC = *r.RecurringCharges[0].Amount
+		}
+		FP := *r.FixedPrice
+		effectivePrice := RC + FP/float64(*r.Duration)*3600
+		riEffectiveHourlyPrice.With(labels).Add(effectivePrice / float64(units))
+		riHourlyPrice.With(labels).Add(RC / float64(units))
+		riFixedPrice.With(labels).Add(FP / float64(units))
+
+		// write to db
+		if err := postgres.InsertIntoPGReservations(&labels, RC, FP, effectivePrice); err != nil {
+			log.Println("There was an error calling InsertIntoPGReservations for:", labels["id"])
+			log.Fatal(err.Error())
+		}
 	}
 
 	rilparams := &ec2.DescribeReservedInstancesListingsInput{

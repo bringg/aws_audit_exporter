@@ -29,14 +29,18 @@ import (
 	"github.com/urfave/cli"
 
 	"github.com/EladDolev/aws_audit_exporter/billing"
+	"github.com/EladDolev/aws_audit_exporter/debug"
+	"github.com/EladDolev/aws_audit_exporter/postgres"
 )
 
 type options struct {
-	addr         string
-	duration     time.Duration
-	instanceTags string
-	spotOS       string
-	region       string
+	addr           string
+	dbURL          string
+	duration       time.Duration
+	instanceTags   string
+	migrationsARGS string
+	region         string
+	spotOS         string
 }
 
 // We have to construct the set of tags for this based on the program
@@ -63,6 +67,18 @@ func main() {
 			EnvVar:      "ADDR",
 			Destination: &options.addr,
 		},
+		cli.BoolTFlag{
+			Name:        "debug",
+			Usage:       "Whether to print debug logs and SQL statements",
+			EnvVar:      "DEBUG",
+			Destination: &debug.Enabled,
+		},
+		cli.StringFlag{
+			Name:        "db-url",
+			Usage:       "postgres connection url",
+			EnvVar:      "DB_URL",
+			Destination: &options.dbURL,
+		},
 		cli.DurationFlag{
 			Name:        "duration",
 			Value:       time.Minute * 4,
@@ -77,11 +93,11 @@ func main() {
 			Destination: &options.instanceTags,
 		},
 		cli.StringFlag{
-			Name:        "spot-os",
-			Value:       "Linux",
-			Usage:       "comma seperated list of operating systems to get spot price history for [Linux|SUSE|RHEL|Windows]",
-			EnvVar:      "SPOT_OS",
-			Destination: &options.spotOS,
+			Name:        "migrations-args",
+			Value:       "",
+			Usage:       "args to github.com/go-pg/migrations",
+			EnvVar:      "MIGRATIONS_ARGS",
+			Destination: &options.migrationsARGS,
 		},
 		cli.StringFlag{
 			Name:        "region",
@@ -89,6 +105,13 @@ func main() {
 			Usage:       "the region to query",
 			EnvVar:      "REGION",
 			Destination: &options.region,
+		},
+		cli.StringFlag{
+			Name:        "spot-os",
+			Value:       "Linux",
+			Usage:       "comma seperated list of operating systems to get spot price history for [Linux|SUSE|RHEL|Windows]",
+			EnvVar:      "SPOT_OS",
+			Destination: &options.spotOS,
 		},
 	}
 
@@ -104,7 +127,7 @@ func main() {
 
 		sess, err := session.NewSession()
 		if err != nil {
-			return fmt.Errorf("failed to create session %v", err)
+			return fmt.Errorf("failed to create session: %v", err)
 		}
 
 		svc := ec2.New(sess, &aws.Config{Region: aws.String(options.region)})
@@ -112,9 +135,21 @@ func main() {
 		if pList, err = billing.GetProductDescriptions(options.spotOS, billing.IsClassicLink(svc)); err != nil {
 			return err
 		}
+		if len(options.dbURL) > 0 {
+			if err = postgres.ConnectPostgres(options.dbURL); err != nil {
+				return err
+			}
+			defer postgres.DB.Close()
+			if err = postgres.MaintainSchema(options.migrationsARGS); err != nil {
+				return err
+			}
+			if len(options.migrationsARGS) > 0 {
+				return nil
+			}
+		}
 
 		go func() {
-			billing.RegisterSpotsMetrics2()
+			billing.RegisterSpotsPricesMetrics()
 			for {
 				billing.GetSpotsCurrentPrices(svc, pList)
 				<-time.After(time.Hour)

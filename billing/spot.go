@@ -9,6 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/EladDolev/aws_audit_exporter/postgres"
 )
 
 var (
@@ -68,8 +70,8 @@ func RegisterSpotsMetrics(tagList []string) {
 	prometheus.Register(siCount)
 }
 
-// RegisterSpotsMetrics2 constructs and registers Prometheus metrics
-func RegisterSpotsMetrics2() {
+// RegisterSpotsPricesMetrics constructs and registers Prometheus metrics
+func RegisterSpotsPricesMetrics() {
 
 	sphPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "aws_ec2_spot_price_per_hour_dollars",
@@ -175,6 +177,11 @@ func GetSpotsCurrentPrices(svc *ec2.EC2, pList []*string) {
 				if sp.SpotPrice != nil {
 					if f, err := strconv.ParseFloat(*sp.SpotPrice, 64); err == nil {
 						sphPrice.With(spLabels).Set(f)
+						// write to db
+						if err = postgres.InsertIntoPGSpotPrices(&spLabels, f); err != nil {
+							log.Println("There was an error calling insertIntoPGSpotPrices")
+							log.Fatal(err.Error())
+						}
 					}
 				}
 			}
