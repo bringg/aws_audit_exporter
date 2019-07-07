@@ -186,5 +186,5 @@ func InsertIntoPGReservations(values *prometheus.Labels, RC float64, FP float64,
 		UpfrontPrice:     uint64(FP * 100000000),
 	}
 
-	return upsert(&reservation, &[]string{"reservation_id"}, &[]string{"state"})
+	return upsert(&reservation, &[]string{"reservation_id"}, &[]string{"state", "updated_at"})
 }
