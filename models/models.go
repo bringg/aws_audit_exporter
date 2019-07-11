@@ -135,7 +135,7 @@ var reservationsChecks = map[string]string{
 	"offer_class":       `offer_class IN ('standard', 'convertible', 'scheduled')`,
 	"offer_type":        `offer_type IN ('Partial Upfront', 'All Upfront', 'No Upfront')`,
 	"scope":             `scope IN ('Region', 'Availability Zone')`,
-	"state":             `state IN ('active', 'retired', 'payment failed', 'payment pending')`,
+	"state":             `state IN ('active', 'retired', 'payment-failed', 'payment-pending')`,
 	"tenancy":           `tenancy IN ('default', 'dedicated')`,
 	"type_match_family": `substring(instance_type from '(.+)\..+') = family`,
 }
