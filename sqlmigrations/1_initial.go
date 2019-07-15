@@ -11,43 +11,6 @@ import (
 	"github.com/EladDolev/aws_audit_exporter/models"
 )
 
-var billingTables = []models.BillingTable{
-	&models.InstancesTable{},
-	&models.InstancesUptimeTable{},
-	&models.ReservationsTable{},
-	&models.SpotPricesTable{},
-}
-
-// createIndexes creates indexes for BillingTable
-// acts on a map of index suffix to command suffix
-// index prefix: "idx_%tableName%_"
-// command prefix: "CREATE INDEX %indexName% ON %tableName% "
-func createIndexes(db migrations.DB, model models.BillingTable) error {
-	for iSuffix, cSuffix := range *model.GetTableIndexes() {
-		sqlStatement := fmt.Sprintf("CREATE INDEX idx_%s_%s ON %s %s",
-			model.GetTableName(), iSuffix, model.GetTableName(), cSuffix)
-		if _, err := db.ExecOne(sqlStatement); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// createChecks creates check constraints for BillingTable
-// acts on a map of check name to check command
-func createChecks(db migrations.DB, model models.BillingTable) error {
-	for checkName, check := range *model.GetTableChecks() {
-		tabelName := model.GetTableName()
-		constraintName := fmt.Sprintf("%s_%s_check", tabelName, checkName)
-		sqlStatement := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s)",
-			tabelName, constraintName, check)
-		if _, err := db.ExecOne(sqlStatement); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func init() {
 	migrations.MustRegisterTx(func(db migrations.DB) error {
 		debug.Println("creating DB schema")

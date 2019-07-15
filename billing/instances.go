@@ -94,11 +94,12 @@ func (s *Instances) GetInstancesInfo() {
 			}
 			// TODO: bring back the mutex
 			(*s.InstanceLabelsCache)[*ins.InstanceId] = prometheus.Labels{}
-			for _, label := range s.InstanceTags {
+			tags := make(map[string]string)
+			for key, label := range s.InstanceTags {
 				labels[label] = "none"
+				tags[key] = "none"
 				(*s.InstanceLabelsCache)[*ins.InstanceId][label] = "none"
 			}
-			tags := make(map[string]string)
 			for _, tag := range ins.Tags {
 				label, ok := s.InstanceTags[*tag.Key]
 				if ok {
