@@ -46,12 +46,12 @@ The following labels are exposed:
 - *duration*: Duration of the reservation in seconds
 - *end_date*: Date on which the reservation is retired
 - *family*: Instance family
-- *id*: The reservation id
 - *instance_type*: Type of instance
 - *offer_class*: The Reserved Instance class type (Standard | Convertible)
 - *offer_type*: The Reserved Instance offering type (No Upfront | Partial Upfront | All Upfront)
 - *product*: The product description
 - *region*: The region in which the reservation exists
+- *ri_id*: The reservation id
 - *scope*: Region or Availability Zone
 - *start_date*: Date on which the reservation started
 - *state*: The state of the Reserved Instance (payment-pending | active | payment-failed)
@@ -61,16 +61,24 @@ The following labels are exposed:
 ## EC2 Reserved Instances listed on the marketplace
 
 - *aws_ec2_reserved_instances_listing_count*: Reserved instances listed on the market for a reservation
+- *aws_ec2_reserved_instances_listing_price*: Current upfront price for listing
 
 The following labels are exposed:
 
 - *az*: Availability zone
+- *created_date*: Date on which listing was created
 - *family*: Instance family
 - *instance_type*: Type of instance
+- *months_left*: Months left till Reserved Instances are retired
 - *product*: The product description
+- *region*: The region in which the Reserved Instances exists
+- *ril_id*: The reservation listing id
 - *scope*: Region or Availability Zone
-- *state*: The state of the listed Reserved Instances
-- *units*: The normalization units of the instance
+- *source_ri_id*: The original reservation id for which listing was created
+- *state*: The state of the listed Reserved Instances (available, cancelled, pending, sold)
+- *status_message*: The reason for the current status of the Reserved Instance listing. The response can be blank
+- *status*: The status of the listed Reserved Instances (active, cancelled, closed, pending)
+- *units*: The normalization units of the Reserved Instances
 
 ## EC2 Spot Instance Request
 
@@ -152,6 +160,10 @@ Below is an IAM role with the required permissions
 
 Writes data to postgres to allow longer retention, and data aggregations
 Was tested on postgresql 9.6 in RDS
+
+Information in the DB is eventual consistent, i.e. it will take a full iteration for data to be updated.
+Sell events are being pulled from CloudTrail, so if not enabled or if data is beign collected for events older than 90 days,
+history might not be correct. Once data was collected from CloudTrail, it won't be changed after time.
 
 hstore extention needs to enable on the database in use
 Run with a privelleged user:

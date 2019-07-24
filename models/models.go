@@ -2,6 +2,8 @@ package models
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // BillingTable represents a table in the aws_audit_exporter RDBMS
@@ -9,6 +11,25 @@ type BillingTable interface {
 	GetTableName() string
 	GetTableIndexes() *map[string]string
 	GetTableChecks() *map[string]string
+	GetTableForeignKeys() *map[string]string
+}
+
+// Enums a map for enums used in database
+// used in createEnums(migrations.DB) and destroyEnums(migrations.DB) functions
+var Enums = map[string][]string{
+	"instance_lifecycle":         []string{"normal", "spot"},
+	"instance_state":             []string{"pending", "running", "shutting-down", "rebooting", "terminated", "stopping", "stopped"},
+	"reservation_lifecycle":      []string{"canceled", "converted", "sell_splitted", "sold", "unchanged", "unknown"},
+	"reservation_listing_state":  []string{"available", "cancelled", "pending", "sold"},
+	"reservation_listing_status": []string{"active", "cancelled", "closed", "pending"},
+	"reservation_offer_class":    []string{"convertible", "scheduled", "standard"},
+	"reservation_offer_type":     []string{"All Upfront", "No Upfront", "Partial Upfront"},
+	"reservation_scope":          []string{"Availability Zone", "Region"},
+	"reservation_state":          []string{"active", "payment-failed", "payment-pending", "retired"},
+	"reservation_tenancy":        []string{"dedicated", "default"},
+	"spot_product": []string{"Linux/UNIX", "Linux/UNIX (Amazon VPC)", "Windows",
+		"Windows (Amazon VPC)", "SUSE Linux", "SUSE Linux (Amazon VPC)",
+		"Red Hat Enterprise Linux", "Red Hat Enterprise Linux (Amazon VPC)"},
 }
 
 // -------------------------------------------------------------
@@ -25,28 +46,26 @@ var instancesIndexes = map[string]string{
 }
 
 var instancesChecks = map[string]string{
-	"state": `state IN ('pending', 'running', 'shutting-down', 'rebooting',
-			  'terminated', 'stopping', 'stopped')`,
 	"times": `launch_time >= '2006-08-25'
 			  AND created_at >= launch_time
 			  AND updated_at >= created_at`,
-	"lifecycle":         `lifecycle IN ('spot', 'normal')`,
 	"type_match_family": `substring(instance_type from '(.+)\..+') = family`,
 }
 
-// InstancesTable hold information about ec2 instances
-type InstancesTable struct {
-	TableName    struct{}  `sql:"instances"`
+var instancesForeignKeys = map[string]string{}
+
+// Instances hold information about ec2 instances
+type Instances struct {
 	InstanceID   string    `sql:"type:varchar(25),pk"`
 	Az           string    `sql:"type:varchar(15),notnull"`
 	CreatedAt    time.Time `sql:"default:now(),notnull"`
 	Family       string    `sql:"type:varchar(4),notnull"`
 	InstanceType string    `sql:"type:varchar(13),notnull"`
 	LaunchTime   time.Time `sql:",notnull"`
-	Lifecycle    string    `sql:"type:varchar(9),notnull"`
+	Lifecycle    string    `sql:"type:instance_lifecycle,notnull"`
 	OwnerID      uint64    `sql:",notnull"`
 	RequesterID  uint64    `sql:",notnull"`
-	State        string    `sql:"type:varchar(13),notnull"`
+	State        string    `sql:"type:instance_state,notnull"`
 	Units        float32   `sql:",notnull"`
 	UpdatedAt    time.Time `sql:"default:now(),notnull"`
 	Groups       string
@@ -54,18 +73,23 @@ type InstancesTable struct {
 }
 
 // GetTableName returns table name
-func (i *InstancesTable) GetTableName() string {
+func (i *Instances) GetTableName() string {
 	return "instances"
 }
 
 // GetTableIndexes returns table indexes
-func (i *InstancesTable) GetTableIndexes() *map[string]string {
+func (i *Instances) GetTableIndexes() *map[string]string {
 	return &instancesIndexes
 }
 
 // GetTableChecks returns table check constraints
-func (i *InstancesTable) GetTableChecks() *map[string]string {
+func (i *Instances) GetTableChecks() *map[string]string {
 	return &instancesChecks
+}
+
+// GetTableForeignKeys returns table foreign keys constraints
+func (i *Instances) GetTableForeignKeys() *map[string]string {
+	return &instancesForeignKeys
 }
 
 // ------------------------------------------------------------
@@ -73,41 +97,48 @@ func (i *InstancesTable) GetTableChecks() *map[string]string {
 // ------------------------------------------------------------
 
 var instancesUptimeIndexes = map[string]string{
-	"updated_at": "(updated_at)",
+	"launch_time": "(launch_time)",
+	"updated_at":  "(updated_at)",
 }
 
 var instancesUptimeChecks = map[string]string{
-	"state": `state IN ('pending', 'running', 'shutting-down', 'rebooting',
-			  'terminated', 'stopping', 'stopped')`,
 	"times": `launch_time >= '2006-08-25'
 			  AND created_at >= launch_time
 			  AND updated_at >= created_at`,
 }
 
-// InstancesUptimeTable holds information about instance state changes over time
-type InstancesUptimeTable struct {
+var instancesUptimeForeignKeys = map[string]string{
+	"instance_id": "instances(instance_id) ON DELETE RESTRICT",
+}
+
+// InstancesUptime holds information about instance state changes over time
+type InstancesUptime struct {
+	InstanceID string    `sql:"type:varchar(25),pk"`
+	LaunchTime time.Time `sql:",notnull,pk"`
+	State      string    `sql:"type:instance_state,pk"`
 	TableName  struct{}  `sql:"instances_uptime"`
-	ID         int64     `sql:",pk"`
 	CreatedAt  time.Time `sql:"default:now(),notnull"`
-	InstanceID string    `sql:"type:varchar(25),notnull,unique:instance_id_launch_time_state"`
-	LaunchTime time.Time `sql:",notnull,unique:instance_id_launch_time_state"`
-	State      string    `sql:"type:varchar(13),notnull,unique:instance_id_launch_time_state"`
 	UpdatedAt  time.Time `sql:"default:now(),notnull"`
 }
 
 // GetTableName returns table name
-func (i *InstancesUptimeTable) GetTableName() string {
+func (i *InstancesUptime) GetTableName() string {
 	return "instances_uptime"
 }
 
 // GetTableIndexes returns table indexes
-func (i *InstancesUptimeTable) GetTableIndexes() *map[string]string {
+func (i *InstancesUptime) GetTableIndexes() *map[string]string {
 	return &instancesUptimeIndexes
 }
 
 // GetTableChecks returns table check constraints
-func (i *InstancesUptimeTable) GetTableChecks() *map[string]string {
+func (i *InstancesUptime) GetTableChecks() *map[string]string {
 	return &instancesUptimeChecks
+}
+
+// GetTableForeignKeys returns table foreign keys constraints
+func (i *InstancesUptime) GetTableForeignKeys() *map[string]string {
+	return &instancesUptimeForeignKeys
 }
 
 // ------------------------------------------------------------
@@ -115,6 +146,7 @@ func (i *InstancesUptimeTable) GetTableChecks() *map[string]string {
 // ------------------------------------------------------------
 
 var reservationsIndexes = map[string]string{
+	"az":         "(az)",
 	"end_date":   "(end_date)",
 	"family":     "(family)",
 	"region":     "(region)",
@@ -132,54 +164,208 @@ var reservationsChecks = map[string]string{
 			  AND duration <= 94608000`,
 	"recurring_charges": `recurring_charges > 0
 						  OR offer_type = 'All Upfront'`,
-	"offer_class":       `offer_class IN ('standard', 'convertible', 'scheduled')`,
-	"offer_type":        `offer_type IN ('Partial Upfront', 'All Upfront', 'No Upfront')`,
-	"scope":             `scope IN ('Region', 'Availability Zone')`,
-	"state":             `state IN ('active', 'retired', 'payment-failed', 'payment-pending')`,
-	"tenancy":           `tenancy IN ('default', 'dedicated')`,
 	"type_match_family": `substring(instance_type from '(.+)\..+') = family`,
 }
 
-// ReservationsTable holds information for reserved instances
-type ReservationsTable struct {
-	TableName        struct{}  `sql:"reservations"`
-	ID               int32     `sql:",pk"`
-	Az               string    `sql:"type:varchar(15)"`
-	Count            int16     `sql:",notnull"`
-	CreatedAt        time.Time `sql:"default:now(),notnull"`
-	Duration         int32     `sql:",notnull"`
-	EffectivePrice   uint64    `sql:"default:,notnull"`
-	EndDate          time.Time `sql:",notnull"`
-	Family           string    `sql:"type:varchar(4),notnull"`
-	InstanceType     string    `sql:"type:varchar(13),notnull"`
-	OfferClass       string    `sql:"type:varchar(11),notnull"`
-	OfferType        string    `sql:"type:varchar(15),notnull"`
-	Product          string    `sql:"type:varchar(37),notnull"`
-	RecurringCharges uint64    `sql:",notnull"`
-	Region           string    `sql:"type:varchar(14),notnull"`
-	ReservationID    string    `sql:"type:varchar(40),notnull,unique"`
-	Scope            string    `sql:"type:varchar(17),notnull"`
-	StartDate        time.Time `sql:",notnull"`
-	State            string    `sql:"type:varchar(15),notnull"`
-	Tenancy          string    `sql:"type:varchar(9),notnull"`
-	Units            float32   `sql:",notnull"`
-	UpdatedAt        time.Time `sql:"default:now(),notnull"`
-	UpfrontPrice     uint64    `sql:",notnull"`
+var reservationsForeignKeys = map[string]string{
+	//"listed_on": "reservations_listings(listing_id) ON DELETE RESTRICT",
+}
+
+// Reservations holds information for reserved instances
+type Reservations struct {
+	ReservationID    uuid.UUID   `sql:"type:uuid,pk"`
+	Az               string      `sql:"type:varchar(15)"`
+	Count            uint16      `sql:",notnull"`
+	CreatedAt        time.Time   `sql:"default:now(),notnull"`
+	Duration         int32       `sql:",notnull"`
+	EffectivePrice   uint64      `sql:",notnull"`
+	EndDate          time.Time   `sql:",notnull"`
+	Family           string      `sql:"type:varchar(4),notnull"`
+	InstanceType     string      `sql:"type:varchar(13),notnull"`
+	Lifecycle        []string    `sql:"type:reservation_lifecycle[],array,notnull"`
+	ListedOn         []uuid.UUID `sql:"type:uuid[],array"`
+	OfferClass       string      `sql:"type:reservation_offer_class,notnull"`
+	OfferType        string      `sql:"type:reservation_offer_type,notnull"`
+	Product          string      `sql:"type:varchar(37),notnull"`
+	RecurringCharges uint64      `sql:",notnull"`
+	Region           string      `sql:"type:varchar(14),notnull"`
+	Scope            string      `sql:"type:reservation_scope,notnull"`
+	StartDate        time.Time   `sql:",notnull"`
+	State            string      `sql:"type:reservation_state,notnull"`
+	Tenancy          string      `sql:"type:reservation_tenancy,notnull"`
+	Units            float32     `sql:",notnull"`
+	UpdatedAt        time.Time   `sql:"default:now(),notnull"`
+	UpfrontPrice     uint64      `sql:",notnull"`
 }
 
 // GetTableName returns table name
-func (r *ReservationsTable) GetTableName() string {
+func (r *Reservations) GetTableName() string {
 	return "reservations"
 }
 
 // GetTableIndexes returns table indexes
-func (r *ReservationsTable) GetTableIndexes() *map[string]string {
+func (r *Reservations) GetTableIndexes() *map[string]string {
 	return &reservationsIndexes
 }
 
 // GetTableChecks returns table check constraints
-func (r *ReservationsTable) GetTableChecks() *map[string]string {
+func (r *Reservations) GetTableChecks() *map[string]string {
 	return &reservationsChecks
+}
+
+// GetTableForeignKeys returns table foreign keys constraints
+func (r *Reservations) GetTableForeignKeys() *map[string]string {
+	return &reservationsForeignKeys
+}
+
+// ------------------------------------------------------------
+// --------------- reservations relations table ---------------
+// ------------------------------------------------------------
+
+var reservationsRelationsIndexes = map[string]string{}
+
+var reservationselationsChecks = map[string]string{}
+
+var reservationsRelationsForeignKeys = map[string]string{
+	"reservation_id": "reservations(reservation_id) ON DELETE RESTRICT",
+	"parent_id":      "reservations(reservation_id) ON DELETE RESTRICT",
+}
+
+// ReservationsRelations hold relations between reservations
+type ReservationsRelations struct {
+	ParentID      uuid.UUID `sql:"type:uuid,pk"`
+	ReservationID uuid.UUID `sql:"type:uuid,pk"`
+	CreatedAt     time.Time `sql:"default:now(),notnull"`
+	UpdatedAt     time.Time `sql:"default:now(),notnull"`
+}
+
+// GetTableName returns table name
+func (r *ReservationsRelations) GetTableName() string {
+	return "reservations_relations"
+}
+
+// GetTableIndexes returns table indexes
+func (r *ReservationsRelations) GetTableIndexes() *map[string]string {
+	return &reservationsRelationsIndexes
+}
+
+// GetTableChecks returns table check constraints
+func (r *ReservationsRelations) GetTableChecks() *map[string]string {
+	return &reservationselationsChecks
+}
+
+// GetTableForeignKeys returns table foreign keys constraints
+func (r *ReservationsRelations) GetTableForeignKeys() *map[string]string {
+	return &reservationsRelationsForeignKeys
+}
+
+// -------------------------------------------------------------
+// ---------------- reservations_listings table ----------------
+// -------------------------------------------------------------
+
+var reservationsListingIndexes = map[string]string{
+	"az":             "(az)",
+	"published_date": "(published_date)",
+	"family":         "(family)",
+	"region":         "(region)",
+	"state":          "(state)",
+	"status":         "(status)",
+}
+
+var reservationsListingsChecks = map[string]string{
+	"dates": `published_date >= '2009-03-12'
+			  AND updated_at >= created_at
+			  AND created_at >= published_date`,
+	"type_match_family": `substring(instance_type from '(.+)\..+') = family`,
+}
+
+var reservationsListingsForeignKeys = map[string]string{}
+
+// ReservationsListings holds historical and current reservations listings in the AWS marketplace
+type ReservationsListings struct {
+	ListingID     uuid.UUID `sql:"type:uuid,pk"`
+	State         string    `sql:"type:reservation_listing_state,pk"`
+	Az            string    `sql:"type:varchar(15)"`
+	Count         uint16    `sql:",notnull"`
+	CreatedAt     time.Time `sql:"default:now(),notnull"`
+	Family        string    `sql:"type:varchar(4),notnull"`
+	InstanceType  string    `sql:"type:varchar(13),notnull"`
+	Product       string    `sql:"type:varchar(37),notnull"`
+	PublishedDate time.Time `sql:",notnull"`
+	Region        string    `sql:"type:varchar(14),notnull"`
+	Scope         string    `sql:"type:reservation_scope,notnull"`
+	Status        string    `sql:"type:reservation_listing_status,notnull"`
+	StatusMessage string
+	Units         float32   `sql:",notnull"`
+	UpdatedAt     time.Time `sql:"default:now(),notnull"`
+}
+
+// GetTableName returns table name
+func (r *ReservationsListings) GetTableName() string {
+	return "reservations_listings"
+}
+
+// GetTableIndexes returns table indexes
+func (r *ReservationsListings) GetTableIndexes() *map[string]string {
+	return &reservationsListingIndexes
+}
+
+// GetTableChecks returns table check constraints
+func (r *ReservationsListings) GetTableChecks() *map[string]string {
+	return &reservationsListingsChecks
+}
+
+// GetTableForeignKeys returns table foreign keys constraints
+func (r *ReservationsListings) GetTableForeignKeys() *map[string]string {
+	return &reservationsListingsForeignKeys
+}
+
+// -------------------------------------------------------------
+// ------------- reservations_listings_prices table ------------
+// -------------------------------------------------------------
+
+var reservationsListingTermsIndexes = map[string]string{
+	"end_date": "(end_date)",
+}
+
+var reservationsListingsTermsChecks = map[string]string{
+	"dates": `start_date >= '2009-03-12'
+			  AND updated_at >= created_at
+			  AND end_date <= now() + interval '3 years'`,
+	"term_length": "end_date <= start_date + interval '30 days'",
+}
+
+var reservationsListingTermsForeignKeys = map[string]string{}
+
+// ReservationsListingsTerms holds listing terms history, price and number of sold instances
+type ReservationsListingsTerms struct {
+	ListingID    uuid.UUID `sql:"type:uuid,pk"`
+	StartDate    time.Time `sql:",pk"`
+	UnitsSold    uint16    `sql:",notnull"`
+	CreatedAt    time.Time `sql:"default:now(),notnull"`
+	EndDate      time.Time `sql:",notnull"`
+	UpdatedAt    time.Time `sql:"default:now(),notnull"`
+	UpfrontPrice uint64    `sql:",notnull"`
+}
+
+// GetTableName returns table name
+func (r *ReservationsListingsTerms) GetTableName() string {
+	return "reservations_listings_terms"
+}
+
+// GetTableIndexes returns table indexes
+func (r *ReservationsListingsTerms) GetTableIndexes() *map[string]string {
+	return &reservationsListingTermsIndexes
+}
+
+// GetTableChecks returns table check constraints
+func (r *ReservationsListingsTerms) GetTableChecks() *map[string]string {
+	return &reservationsListingsTermsChecks
+}
+
+// GetTableForeignKeys returns table foreign keys constraints
+func (r *ReservationsListingsTerms) GetTableForeignKeys() *map[string]string {
+	return &reservationsListingTermsForeignKeys
 }
 
 // -------------------------------------------------------------
@@ -192,38 +378,41 @@ var spotPricesIndexes = map[string]string{
 }
 
 var spotPricesChecks = map[string]string{
-	"product": `product IN ('Linux/UNIX', 'Linux/UNIX (Amazon VPC)', 'Windows',
-				'Windows (Amazon VPC)', 'SUSE Linux', 'SUSE Linux (Amazon VPC)',
-				'Red Hat Enterprise Linux', 'Red Hat Enterprise Linux (Amazon VPC)')`,
 	"times":             `date_trunc('second', updated_at) = date_trunc('second', created_at)`,
 	"type_match_family": `substring(instance_type from '(.+)\..+') = family`,
 }
 
-// SpotPricesTable holds historical spots prices
-type SpotPricesTable struct {
+var spotPricesForeignKeys = map[string]string{}
+
+// SpotPrices holds historical spots prices
+type SpotPrices struct {
+	Az               string    `sql:"type:varchar(15),pk"`
+	CreatedAt        time.Time `sql:"default:now(),pk"`
+	InstanceType     string    `sql:"type:varchar(13),pk"`
+	Product          string    `sql:"type:spot_product,pk"`
 	TableName        struct{}  `sql:"spot_prices"`
-	ID               int64     `sql:",pk"`
-	Az               string    `sql:"type:varchar(15),notnull,unique:current_price"`
-	CreatedAt        time.Time `sql:"default:now(),notnull,unique:current_price"`
 	Family           string    `sql:"type:varchar(4),notnull"`
-	InstanceType     string    `sql:"type:varchar(13),notnull,unique:current_price"`
-	Product          string    `sql:"type:varchar(37),notnull,unique:current_price"`
 	RecurringCharges uint64    `sql:",notnull"`
 	UpdatedAt        time.Time `sql:"default:now(),notnull"`
 	Units            float32   `sql:",notnull"`
 }
 
 // GetTableName returns table name
-func (s *SpotPricesTable) GetTableName() string {
+func (s *SpotPrices) GetTableName() string {
 	return "spot_prices"
 }
 
 // GetTableIndexes returns table indexes
-func (s *SpotPricesTable) GetTableIndexes() *map[string]string {
+func (s *SpotPrices) GetTableIndexes() *map[string]string {
 	return &spotPricesIndexes
 }
 
 // GetTableChecks returns table check constraints
-func (s *SpotPricesTable) GetTableChecks() *map[string]string {
+func (s *SpotPrices) GetTableChecks() *map[string]string {
 	return &spotPricesChecks
+}
+
+// GetTableForeignKeys returns table foreign keys constraints
+func (s *SpotPrices) GetTableForeignKeys() *map[string]string {
+	return &spotPricesForeignKeys
 }

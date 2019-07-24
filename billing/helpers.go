@@ -8,8 +8,25 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/service/cloudtrail"
 	"github.com/aws/aws-sdk-go/service/ec2"
 )
+
+// CloudTrailSession holds a session for CloudTrail
+var CloudTrailSession *cloudtrail.CloudTrail
+
+// TODO: check if needed
+func getCloudTrailEvents(params *cloudtrail.LookupEventsInput) (*cloudtrail.LookupEventsOutput, error) {
+	if params == nil {
+		return nil, errors.New("got nil pointer")
+	}
+
+	output, err := CloudTrailSession.LookupEvents(params)
+	if err != nil {
+		return nil, fmt.Errorf("Failed getting CloudTrail events: %s", err.Error())
+	}
+	return output, nil
+}
 
 // GetProductDescriptions maps program OS input to AWS format
 func GetProductDescriptions(osList string, isVPC bool) ([]*string, error) {

@@ -24,8 +24,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/cloudtrail"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/urfave/cli"
 
 	"github.com/EladDolev/aws_audit_exporter/billing"
@@ -65,12 +67,13 @@ func maintainSchema() error {
 		Count(); err != nil {
 		return err
 	} else if n == 0 {
-		if err = sqlmigrations.RunMigrations(postgres.DB, "init"); err != nil {
+		//oldVersion, newVersion, err := migrations.Run(postgres.DB)
+		if err = sqlmigrations.RunMigrations("init"); err != nil {
 			return err
 		}
 	}
 	// running migrations
-	return sqlmigrations.RunMigrations(postgres.DB, "")
+	return sqlmigrations.RunMigrations("")
 }
 
 func main() {
@@ -105,7 +108,7 @@ func main() {
 				}
 				defer postgres.DB.Close()
 
-				if err := sqlmigrations.RunMigrations(postgres.DB,
+				if err := sqlmigrations.RunMigrations(
 					strings.Join(c.Args(), " ")); err != nil {
 					log.Fatal(err)
 					return err
@@ -180,6 +183,7 @@ func main() {
 		}
 
 		svc := ec2.New(sess, &aws.Config{Region: aws.String(options.region)})
+		billing.CloudTrailSession = cloudtrail.New(sess, aws.NewConfig().WithRegion(options.region))
 
 		if pList, err = billing.GetProductDescriptions(options.spotOS, billing.IsClassicLink(svc)); err != nil {
 			return err
@@ -229,7 +233,7 @@ func main() {
 
 		}()
 
-		http.Handle("/metrics", prometheus.Handler())
+		http.Handle("/metrics", promhttp.Handler())
 
 		return http.ListenAndServe(options.addr, nil)
 	}
