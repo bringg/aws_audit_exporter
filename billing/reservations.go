@@ -6,15 +6,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/cloudtrail"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/tidwall/gjson"
 
-	"github.com/EladDolev/aws_audit_exporter/debug"
 	"github.com/EladDolev/aws_audit_exporter/postgres"
 )
 
@@ -183,16 +178,6 @@ func GetReservationsInfo(svc *ec2.EC2) {
 		labels["tenancy"] = *r.InstanceTenancy
 		ris[*r.ReservedInstancesId] = r
 
-		listings, err := getReservedInstancesListings(svc, r)
-		if err != nil {
-			log.Println("there was an error calling getReservedInstancesListings", err.Error())
-			log.Fatal(err.Error())
-		}
-		// 'listings' exists only for RIs that had listings created for
-		// RI that was created from a parent RI that had some of it's instances sold,
-		// will have a ReservedInstancesId pointing to that parent RI, otherwise will point to itself
-		// there can be maximum two different RI ids in the array, one of which always point to itself
-
 		riInstanceCount.With(labels).Add(float64(*r.InstanceCount))
 
 		units, err := strconv.ParseFloat(labels["units"], 64)
@@ -213,12 +198,33 @@ func GetReservationsInfo(svc *ec2.EC2) {
 		riHourlyPrice.With(labels).Add(RC / float64(units))
 		riFixedPrice.With(labels).Add(FP / float64(units))
 
+		// 'listings' exists only for RIs that had listings created for
+		// RI that was created from a parent RI that had some of it's instances sold,
+		// will have a ReservedInstancesId pointing to that parent RI, otherwise will point to itself
+		// there can be maximum two different RI ids in the array, one of which always point to itself
+		listings, err := getReservedInstancesListings(svc, r)
+		if err != nil {
+			log.Println("there was an error calling getReservedInstancesListings", err.Error())
+			log.Fatal(err.Error())
+		}
 		// write to db
-		//if err := postgres.InsertIntoPGReservations(&labels, RC, FP, effectivePrice); err != nil {
 		if err := postgres.InsertIntoPGReservations(&labels, RC, FP, effectivePrice, &listings); err != nil {
 			log.Println("There was an error calling InsertIntoPGReservations for:", labels["ri_id"])
 			log.Fatal(err.Error())
 		}
+	}
+	// looking for reservations modifications
+	modresp, err := svc.DescribeReservedInstancesModifications(&ec2.DescribeReservedInstancesModificationsInput{})
+	if err != nil {
+		log.Println("There was an error calling DescribeReservedInstancesModifications")
+		log.Fatal(err.Error())
+	}
+	modificationEvents := modresp.ReservedInstancesModifications
+
+	// write to db
+	if err := postgres.InsertIntoPGReservationsRelations(&modificationEvents); err != nil {
+		log.Println("There was an error calling InsertIntoPGReservationsRelations")
+		log.Fatal(err.Error())
 	}
 
 	listings, err := getReservedInstancesListings(svc, nil)
@@ -267,66 +273,11 @@ func GetReservationsInfo(svc *ec2.EC2) {
 				log.Println("There was an error calling InsertIntoPGReservationsListings for:", labels["ril_id"])
 				log.Fatal(err.Error())
 			}
-			var priceSchedulesCloudTrail []*ec2.PriceSchedule
 			if labels["state"] == "sold" {
-				// fetching original api call to create listing from CloudTrail for accurate price terms information
-				// assuming information exists for a maximum of 90 days
-				if ril.CreateDate.After(time.Now().Add(-time.Hour * 24 * 90)) {
-					startTime := ril.CreateDate.Add(-time.Minute)
-					endTime := ril.CreateDate.Add(time.Minute)
-					EventName := cloudtrail.LookupAttribute{
-						AttributeKey:   aws.String("EventName"),
-						AttributeValue: aws.String("CreateReservedInstancesListing"),
-					} // TODO: resourceName is not taken into account
-					resourceName := cloudtrail.LookupAttribute{
-						AttributeKey:   aws.String("ResourceName"),
-						AttributeValue: aws.String(*ril.ReservedInstancesListingId),
-					}
-					lookupAttributes := []*cloudtrail.LookupAttribute{&EventName, &resourceName}
-					params := cloudtrail.LookupEventsInput{
-						StartTime:        &startTime,
-						EndTime:          &endTime,
-						LookupAttributes: lookupAttributes,
-					}
-					cloudTrailOutput, err := CloudTrailSession.LookupEvents(&params)
-					if err != nil {
-						log.Println("there was an error calling Cloud Trail for:", labels["ril_id"])
-						log.Fatal(err.Error())
-					}
-
-					// assuming there should be maximum of one event
-					// also assuming there'll be at least 1 second gap between subsequant calls,
-					// so no need to handle throttling
-					// TODO: don't count on this assumption
-					switch len(cloudTrailOutput.Events) {
-					case 0:
-						debug.Println("found no events in CloudTrail for:", labels["ril_id"])
-					case 1:
-						jsonResult := gjson.Get(*cloudTrailOutput.Events[0].CloudTrailEvent,
-							"requestParameters.priceSchedules.items").Array()
-						for _, priceScheduleJSON := range jsonResult {
-							currencyCode := gjson.Get(priceScheduleJSON.String(), "currencyCode").String()
-							price := gjson.Get(priceScheduleJSON.String(), "price").Float()
-							term := gjson.Get(priceScheduleJSON.String(), "term").Int()
-							// Active will be nil
-							priceSchedule := ec2.PriceSchedule{
-								CurrencyCode: &currencyCode,
-								Price:        &price,
-								Term:         &term,
-							}
-							priceSchedulesCloudTrail = append([]*ec2.PriceSchedule(priceSchedulesCloudTrail), &priceSchedule)
-						}
-					default:
-						log.Printf("got %d events from CloudTrail. ignoring since can't determine which is the correct one",
-							len(cloudTrailOutput.Events))
-					}
-				}
-				PS := ril.PriceSchedules
-				if len(priceSchedulesCloudTrail) > 0 {
-					PS = priceSchedulesCloudTrail
-				}
-				if err := postgres.InsertIntoPGReservationsListingsTerms(&labels, uint16(*ic.InstanceCount), PS); err != nil {
-					log.Println("There was an error calling InsertIntoPGReservationsListingsTerms for:", labels["ril_id"])
+				// write to db
+				if err := postgres.InsertIntoPGReservationsListingsSales(&labels,
+					uint16(*ic.InstanceCount), ril.PriceSchedules); err != nil {
+					log.Println("There was an error calling InsertIntoPGReservationsListingsSales for:", labels["ril_id"])
 					log.Fatal(err.Error())
 				}
 			}

@@ -161,9 +161,7 @@ Below is an IAM role with the required permissions
 Writes data to postgres to allow longer retention, and data aggregations
 Was tested on postgresql 9.6 in RDS
 
-Information in the DB is eventual consistent, i.e. it will take a full iteration for data to be updated.
-Sell events are being pulled from CloudTrail, so if not enabled or if data is beign collected for events older than 90 days,
-history might not be correct. Once data was collected from CloudTrail, it won't be changed after time.
+Some information in the DB is eventual consistent, i.e. it will take a full iteration for data to be updated.
 
 hstore extention needs to enable on the database in use
 Run with a privelleged user:

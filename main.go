@@ -24,7 +24,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/cloudtrail"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -183,7 +182,6 @@ func main() {
 		}
 
 		svc := ec2.New(sess, &aws.Config{Region: aws.String(options.region)})
-		billing.CloudTrailSession = cloudtrail.New(sess, aws.NewConfig().WithRegion(options.region))
 
 		if pList, err = billing.GetProductDescriptions(options.spotOS, billing.IsClassicLink(svc)); err != nil {
 			return err

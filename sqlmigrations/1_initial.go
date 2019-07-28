@@ -14,6 +14,7 @@ import (
 func init() {
 	migrations.MustRegisterTx(func(db migrations.DB) error {
 		debug.Println("creating DB schema")
+		debug.Println("creating custom enum types")
 		if err := createEnums(db); err != nil {
 			return fmt.Errorf("Failed creating enums for database: %v", err)
 		}
@@ -43,7 +44,7 @@ func init() {
 		tables := funk.Map(billingTables, func(model models.BillingTable) string {
 			return model.GetTableName()
 		}).([]string)
-		sqlStatement := "DROP TABLE " + strings.Join(tables, ",") + " CASCADE"
+		sqlStatement := "DROP TABLE IF EXISTS " + strings.Join(tables, ",") + " CASCADE"
 		if _, err := db.ExecOne(sqlStatement); err != nil {
 			return err
 		}

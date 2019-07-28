@@ -19,6 +19,7 @@ var billingTables = []models.BillingTable{
 	&models.Reservations{},
 	&models.ReservationsListingsTerms{},
 	&models.ReservationsRelations{},
+	&models.ReservationsSellEvents{},
 	&models.SpotPrices{},
 }
 

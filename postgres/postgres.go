@@ -152,116 +152,68 @@ func InsertIntoPGSpotPrices(values *prometheus.Labels, RC float64) error {
 	return err
 }
 
-func updateReservationLifecycleStatus(r *models.Reservations, lifecycle string) {
-	switch lifecycle {
-	case "canceled":
-		r.Lifecycle = []string{"canceled"}
-	case "unchanged":
-		r.Lifecycle = []string{"unchanged"}
-	case "unknown":
-		r.Lifecycle = []string{"unknown"}
-	// making sure "unchanged" and "unknown" are not present anymore, and the new status exists only once
-	default:
-		r.Lifecycle = append(funk.Filter(r.Lifecycle, func(s string) bool {
-			return !(s == "unchanged" || s == "unknown" || s == "canceled" || s == lifecycle)
-		}).([]string), lifecycle)
-	}
-}
-
-func findDirectDescendantsAndUpdateLifecycle(r *models.Reservations) (*[]models.Reservations, error) {
-	duration, err := time.ParseDuration(fmt.Sprintf("%ds", r.Duration))
-	if err != nil {
-		return nil, fmt.Errorf("Failed parsing duration: %s", err.Error())
-	}
-	if r.StartDate.Add(duration).Add(-time.Second).Equal(r.EndDate) {
-		updateReservationLifecycleStatus(r, "unchanged")
-		return nil, nil
+// InsertIntoPGReservationsRelations responsible for updating reservations relations information.
+// also updates reservation lifecycle, and original expiration (end)) date
+func InsertIntoPGReservationsRelations(modifications *[]*ec2.ReservedInstancesModification) error {
+	// exist silently if database was not initialized or there are no modifications
+	if DB == nil || modifications == nil || len(*modifications) == 0 {
+		return nil
 	}
 
-	queryBase := fmt.Sprintf(`
-		SELECT * FROM reservations
-		WHERE duration = %d
-		AND offer_class = '%s'
-		AND region = '%s'
-		AND reservation_id != '%s'`,
-		r.Duration, r.OfferClass, r.Region, r.ReservationID,
-	)
-	if r.OfferClass != "convertible" {
-		queryBase += fmt.Sprintf(`
-		AND family = '%s'
-		AND offer_type = '%s'
-		AND product = '%s'
-		AND tenancy = '%s'`,
-			r.Family, r.OfferType, r.Product, r.Tenancy,
-		)
-	}
-	// TODO: consider changing everything to ascendants, so the condition for state='retired' can be added
-	var directDescendants []models.Reservations
-	var foundDirectDescendantsSells bool
-	var foundDirectDescendantsConversion bool
-	// looking for descendants originated from a sell operation
-	queryDecendants := queryBase + fmt.Sprintf(`
-		AND upfront_price = %d
-		AND start_date = '%v'`,
-		r.UpfrontPrice, r.EndDate.Add(time.Second).Format("2006-01-02 15:04:05"),
-	)
-	ormResult, err := DB.Query(&directDescendants, queryDecendants)
-	if err != nil {
-		return nil, fmt.Errorf("Failed running query for finding decendants originated from a sell operation: %s",
-			err.Error(),
-		)
-	}
-	foundDirectDescendantsSells = ormResult.RowsReturned() > 0
-
-	if !foundDirectDescendantsSells {
-		// looking for descendants originated from a converion/exchange operation
-		queryDecendants = queryBase + fmt.Sprintf(`
-		AND start_date = '%v'`, r.EndDate.Format("2006-01-02 15:04:05"),
-		)
-		ormResult, err = DB.Query(&directDescendants, queryDecendants)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"Failed running query for finding decendants originated from a converion/exchange operation: %s",
-				err.Error(),
-			)
+	var relations []models.ReservationsRelations
+	var reservationsUUID []uuid.UUID
+	return DB.RunInTransaction(func(tx *pg.Tx) error {
+		// taking care of midifications
+		for _, modification := range *modifications {
+			if *modification.Status != "fulfilled" {
+				continue
+			}
+			for _, parent := range modification.ReservedInstancesIds {
+				parentUUID, err := uuid.Parse(*parent.ReservedInstancesId)
+				if err != nil {
+					return fmt.Errorf("Failed parsing parentUUID: %s", err.Error())
+				}
+				if len(modification.ReservedInstancesIds) == 12 {
+					fmt.Println(parentUUID)
+				}
+				// saving parent reservation uuid
+				reservationsUUID = append(reservationsUUID, parentUUID)
+				for _, child := range modification.ModificationResults {
+					// updating child converted status
+					childUUID, err := uuid.Parse(*child.ReservedInstancesId)
+					if err != nil {
+						return fmt.Errorf("Failed parsing childUUID: %s", err.Error())
+					}
+					if len(modification.ReservedInstancesIds) == 12 {
+						fmt.Println(childUUID)
+					}
+					// saving child reservation uuid
+					reservationsUUID = append(reservationsUUID, childUUID)
+					// updating relation
+					relation := models.ReservationsRelations{
+						ParentID:      parentUUID,
+						ReservationID: childUUID,
+					}
+					relations = append(relations, relation)
+				}
+			}
 		}
-		foundDirectDescendantsConversion = ormResult.RowsReturned() > 0
-	}
-	// descendants can originate either from a sell operation or conversion, not both
-	if foundDirectDescendantsSells || foundDirectDescendantsConversion {
-		newLifeCycle := "sell_splitted"
-		if foundDirectDescendantsConversion {
-			newLifeCycle = "converted"
-		}
-		// updating original reservation lifecycle status
-		updateReservationLifecycleStatus(r, newLifeCycle)
-		// updating direct descendants lifecycle status
-		for i := 0; i < len(directDescendants); i++ {
-			updateReservationLifecycleStatus(&directDescendants[i], newLifeCycle)
-		}
-		return &directDescendants, nil
-	}
+		reservationsUUID = funk.Uniq(reservationsUUID).([]uuid.UUID)
+		reservations := funk.Map(reservationsUUID, func(u uuid.UUID) models.Reservations {
+			return models.Reservations{
+				ReservationID: u,
+				Canceled:      false,
+				Converted:     true,
+			}
+		}).([]models.Reservations)
 
-	// assuming canceled instances always lives for one second (once aws processing finished)
-	if r.StartDate.Add(time.Second).Equal(r.EndDate) {
-		updateReservationLifecycleStatus(r, "canceled")
-		return nil, nil
-	}
-
-	// a changed reservation without descendats gets it's lifecycle updated from it's ascendants
-	var currentLifecycle []string
-	err = DB.Model(r).Column("lifecycle").Where("reservation_id = ?", r.ReservationID).Select(pg.Array(&currentLifecycle))
-	if err != nil {
-		if err.Error() == "pg: no rows in result set" {
-			// getting here means some information is still missing in the tables. will be converged eventually
-			updateReservationLifecycleStatus(r, "unknown")
-			return nil, nil
+		if _, err := DB.Model(&reservations).Column("converted").WherePK().Update(); err != nil {
+			return err
 		}
-		return nil, fmt.Errorf(
-			"Failed fetching reservation %s from reservations table: %s", r.ReservationID, err.Error())
-	}
-	r.Lifecycle = funk.FlattenDeep(currentLifecycle).([]string)
-	return nil, nil
+		// TODO: taking care of reservations that were splitted after some were sold
+
+		return upsert(&relations, &[]string{"parent_id", "reservation_id"}, &[]string{"updated_at"})
+	})
 }
 
 // InsertIntoPGReservations responsible for updating reservations information
@@ -317,68 +269,19 @@ func InsertIntoPGReservations(values *prometheus.Labels, RC float64, FP float64,
 		UpfrontPrice:     uint64(FP * 1000000000),
 	}
 
-	var directDescendants *[]models.Reservations
-	directDescendants, err = findDirectDescendantsAndUpdateLifecycle(&reservation)
+	// assuming canceled instances always lives for one second (once aws processing finished)
+	// will be overridden if instance was converted
+	if reservation.StartDate.Add(time.Second).Equal(reservation.EndDate) {
+		reservation.Canceled = true
+	}
+
+	reservation.OriginalEndDate, err = getOriginalReservationExpirationDate(&reservation)
 	if err != nil {
-		return fmt.Errorf("Failed calling findDirectDescendantsAndUpdateLifecycle: %s", err.Error())
+		return fmt.Errorf("Failed calling getOriginalReservationExpirationDate: %s", err.Error())
 	}
 
-	if err = upsert(&reservation, &[]string{"reservation_id"}, &[]string{
-		"state", "updated_at", "lifecycle"}); err != nil {
-		return fmt.Errorf("Failed upserting new reservation %s: %s", reservationID, err.Error())
-	}
-	// nil means no direct descendants were found
-	if directDescendants == nil {
-		return nil
-	}
-
-	directDescendantsUUID := funk.Map(*directDescendants, func(d models.Reservations) uuid.UUID {
-		return d.ReservationID
-	}).([]uuid.UUID)
-
-	debug.Printf("Found direct descendants %v with status '%s' for reservation %s\n",
-		directDescendantsUUID, (*directDescendants)[0].Lifecycle, reservationID)
-
-	// updating direct descendants lifecycle
-	if err = upsert(directDescendants, &[]string{"reservation_id"},
-		&[]string{"lifecycle", "updated_at"}); err != nil {
-		return fmt.Errorf("Failed upserting direct descendants for %s: %s", reservationID, err.Error())
-	}
-
-	// now for updating family relations
-	relations := funk.Map(directDescendantsUUID,
-		func(descendant uuid.UUID) models.ReservationsRelations {
-			return models.ReservationsRelations{
-				ParentID:      reservationID,
-				ReservationID: descendant,
-			}
-		}).([]models.ReservationsRelations)
-
-	// looking for rows where direct descendats are the parents
-	var farDescendants []models.ReservationsRelations
-	var farDescendantsUUID []uuid.UUID
-	if err = DB.Model(&farDescendants).Where("parent_id in (?)", pg.In(directDescendantsUUID)).Column(
-		"reservation_id").Select(&farDescendantsUUID); err != nil {
-		return fmt.Errorf("Failed quering for far descendants: %s", err.Error())
-	}
-	// if more distant descendants were found
-	if len(farDescendantsUUID) > 0 {
-		relations = append(relations, funk.Map(farDescendantsUUID,
-			func(descendant uuid.UUID) models.ReservationsRelations {
-				return models.ReservationsRelations{
-					ParentID:      reservationID,
-					ReservationID: descendant,
-				}
-			}).([]models.ReservationsRelations)...)
-	}
-	relations = funk.Uniq(relations).([]models.ReservationsRelations)
-
-	if err = upsert(&relations, &[]string{
-		"parent_id", "reservation_id"}, &[]string{"updated_at"}); err != nil {
-		return fmt.Errorf("Failed updating ReservationsRelationsTable: %s", err.Error())
-	}
-
-	return nil
+	return upsert(&reservation, &[]string{"reservation_id"}, &[]string{
+		"state", "updated_at", "original_end_date"})
 }
 
 // InsertIntoPGReservationsListings responsible for updating reservations listings table
@@ -413,57 +316,77 @@ func InsertIntoPGReservationsListings(values *prometheus.Labels, count uint16) e
 		&[]string{"count", "status", "status_message", "updated_at"})
 }
 
-// TODO: should be optimized
-func getOriginalReservationExpirationDate(r uuid.UUID) (time.Time, error) {
-	// first find the oldest ancestor
-	var startDate time.Time
-	var durationSeconds int32
-	err := DB.Model(new(models.Reservations)).ColumnExpr("start_date").ColumnExpr("duration").Join(
-		"JOIN reservations_relations relation ON reservations.reservation_id = relation.parent_id").Where(
-		"relation.reservation_id = ?", r).Order("start_date").Limit(1).Select(&startDate, &durationSeconds)
-	if err != nil {
-		// couldn't find any ancestors. will get the original reservation parameters
-		if err.Error() == "pg: no rows in result set" {
-			err = DB.Model(new(models.Reservations)).Column("start_date").Column("duration").Where(
-				"reservation_id = ?", r).Select(&startDate, &durationSeconds)
-			if err != nil {
-				return time.Time{}, fmt.Errorf("Failed fetching original reservation parameters: %s", err.Error())
-			}
-		} else {
-			return time.Time{}, fmt.Errorf("Failed looking for ancestors: %s", err.Error())
-		}
-	}
+// getOriginalReservationExpirationDate returns original reservation expiration date
+// might not be accurate for historical data, but should be accurate for new one
+func getOriginalReservationExpirationDate(r *models.Reservations) (time.Time, error) {
 	// all members in the dinesty share the same duration
-	duration, err := time.ParseDuration(fmt.Sprintf("%ds", durationSeconds))
+	duration, err := time.ParseDuration(fmt.Sprintf("%ds", r.Duration))
 	if err != nil {
 		return time.Time{}, fmt.Errorf("Failed parsing duration: %s", err.Error())
 	}
-	// now find the youngest descendant
-	var endDate time.Time
-	err = DB.Model(new(models.Reservations)).ColumnExpr("end_date").Join(
-		"JOIN reservations_relations relation ON reservations.reservation_id = relation.reservation_id").Where(
-		"relation.parent_id = ?", r).Order("end_date ASC").Limit(1).Select(&endDate)
+	// if true, always accurate
+	if r.State != "retired" || r.StartDate.Add(duration).Add(-time.Second).Equal(r.EndDate) {
+		return r.EndDate, nil
+	}
+	// if not the first time seeing this reservation, update with info saved in database
+	err = DB.Model(r).WherePK().Select()
 	if err != nil {
-		// couldn't find any descendants. will get the original reservation parameters
+		// first time. will wait for next iteration to get more accurate information
 		if err.Error() == "pg: no rows in result set" {
-			err = DB.Model(new(models.Reservations)).Column("end_date").Where(
-				"reservation_id = ?", r).Select(&endDate)
-			if err != nil {
-				return time.Time{}, fmt.Errorf("Failed fetching original reservation end date: %s", err.Error())
-			}
-		} else {
-			return time.Time{}, fmt.Errorf("Failed looking for descendants: %s", err.Error())
+			return r.EndDate, nil
 		}
+		return time.Time{}, fmt.Errorf("Failed fetching reservation info from database: %s",
+			err.Error())
 	}
-	originalExpirationDate := startDate.Add(duration).Add(-time.Second)
-	if !originalExpirationDate.Equal(endDate) {
-		debug.Printf("reservation %s expired before end date. either sold, or information missing in the tables", r)
+
+	// look for oldest parent
+	oldestParent := r
+	for {
+		temp := models.Reservations{}
+		err = DB.Model(&temp).Join(
+			"JOIN reservations_relations r ON reservations.reservation_id = r.parent_id").Where(
+			"r.reservation_id = ?", oldestParent.ReservationID).Order("start_date").Limit(1).Select()
+		if err != nil {
+			if err.Error() != "pg: no rows in result set" {
+				return time.Time{}, fmt.Errorf("Failed fetching oldest parent information: %s", err.Error())
+			}
+			break
+		}
+		oldestParent = &temp
 	}
-	return originalExpirationDate, nil
+	if oldestParent == r {
+		// no parents, result will be accurate
+		return r.StartDate.Add(duration).Add(-time.Second), nil
+	}
+
+	// search all siblings and descendants for latest expiration date
+	youngestDescendnt := r
+	for {
+		temp := models.Reservations{}
+		err = DB.Model(&temp).Join(
+			"JOIN reservations_relations r ON reservations.reservation_id = r.reservation_id").Where(
+			"r.parent_id = ?", youngestDescendnt.ReservationID).Order("original_end_date ASC").Limit(1).Select()
+		if err != nil {
+			if err.Error() != "pg: no rows in result set" {
+				return time.Time{}, fmt.Errorf("Failed fetching youngest descendant: %s", err.Error())
+			}
+			break
+		}
+		youngestDescendnt = &temp
+	}
+
+	// this result might not be accurate, but should not stray in more than an hour
+	oldestParentOriginalEndDate := oldestParent.StartDate.Add(duration).Add(-time.Second)
+	if youngestDescendnt.OriginalEndDate.After(oldestParentOriginalEndDate) {
+		return youngestDescendnt.OriginalEndDate, nil
+	}
+	return oldestParentOriginalEndDate, nil
 }
 
-// InsertIntoPGReservationsListingsTerms responsible for updating reservations listings prices table
-func InsertIntoPGReservationsListingsTerms(values *prometheus.Labels, unitsSold uint16, priceSchedules []*ec2.PriceSchedule) error {
+// InsertIntoPGReservationsListingsSales responsible for updating sales information
+// writes to reservations_listings_terms and reservations_sell_events tables
+func InsertIntoPGReservationsListingsSales(values *prometheus.Labels, unitsSold uint16,
+	priceSchedules []*ec2.PriceSchedule) error {
 	// exist silently if database was not initialized
 	if DB == nil {
 		return nil
@@ -477,22 +400,16 @@ func InsertIntoPGReservationsListingsTerms(values *prometheus.Labels, unitsSold 
 	if err != nil {
 		return fmt.Errorf("Failed parsing ListedRIID: %v", err)
 	}
-	listingPublishDate := parseDate((*values)["created_date"])
-	listingTotalTerms := int64(len(priceSchedules))
-	const oneMonthDuration = time.Hour * 24 * 30
-
-	reservationOriginalExpirationDate, err := getOriginalReservationExpirationDate(listedRIID)
-	if err != nil {
-		return fmt.Errorf("Failed calling getOriginalReservationExpirationDate: %s", err.Error())
-	}
-
 	var listedRI models.Reservations
 	if err = DB.Model(&listedRI).Where("reservation_id = ?", listedRIID).Select(); err != nil {
 		return fmt.Errorf("Failed fetching listed reservation %s: %s", listedRIID, err.Error())
 	}
+	reservationOriginalExpirationDate := listedRI.OriginalEndDate
 
 	// calculating sell events
-	sellEvents := map[time.Time]uint16{}
+	sellEvents := []models.ReservationsSellEvents{}
+	sellEvent := models.ReservationsSellEvents{ListingID: listingID}
+	var reservations []models.Reservations
 	if unitsSold > 0 {
 		var reservationsInListing []models.Reservations
 		numResults, err := DB.Model(&reservationsInListing).Where(
@@ -505,47 +422,64 @@ func InsertIntoPGReservationsListingsTerms(values *prometheus.Labels, unitsSold 
 		switch numResults {
 		case 0:
 			return fmt.Errorf("Did not find any reservations that belongs to this listing: %s", err.Error())
-		case 1:
-			r := reservationsInListing[0]
-			if r.ReservationID != listedRIID {
-				return fmt.Errorf("Failed assertion on single sold listedRIID: %s", err.Error())
-			}
-			sold := r.Count
-			sellEvents[r.EndDate] = sold
-			unitsSoldAssertion = sold
-			updateReservationLifecycleStatus(&r, "sold")
-			// TODO: should be changed to update
-			if err = upsert(&r, &[]string{"reservation_id"}, &[]string{"updated_at", "lifecycle"}); err != nil {
-				return fmt.Errorf("Failed updating sold lifecycle for %s: %s", listedRIID, err.Error())
-			}
 		default:
 			youngestDescendntIndex := numResults - 1
 			for i := 0; i < youngestDescendntIndex; i++ {
 				sold := reservationsInListing[i].Count - reservationsInListing[i+1].Count
-				sellEvents[reservationsInListing[i].EndDate] = sold
+				sellEvent.ReservationID = reservationsInListing[i].ReservationID
+				sellEvent.UnitsSold = sold
+				sellEvent.SoldDate = reservationsInListing[i].EndDate
+				sellEvents = append(sellEvents, sellEvent)
+				// updating reservation sell_splitted status
+				reservation := models.Reservations{
+					ReservationID: reservationsInListing[i].ReservationID,
+					SellSplitted:  true,
+					Sold:          false,
+				}
+				reservations = append(reservations, reservation)
 				unitsSoldAssertion += sold
 			}
-			youngestSold := reservationsInListing[youngestDescendntIndex].EndDate.Add(time.Second).Before(reservationOriginalExpirationDate)
-			if youngestSold && youngestDescendntIndex > 0 {
+			youngestSold := reservationsInListing[youngestDescendntIndex].EndDate.Add(
+				time.Second).Before(reservationOriginalExpirationDate)
+			if youngestSold {
 				r := reservationsInListing[youngestDescendntIndex]
 				sold := r.Count
-				sellEvents[r.EndDate] = sold
+				sellEvent.ReservationID = r.ReservationID
+				sellEvent.UnitsSold = sold
+				sellEvent.SoldDate = r.EndDate
+				sellEvents = append(sellEvents, sellEvent)
 				unitsSoldAssertion += sold
-				updateReservationLifecycleStatus(&r, "sold")
-				// TODO: should be changed to update
-				if err = upsert(&r, &[]string{"reservation_id"}, &[]string{"updated_at", "lifecycle"}); err != nil {
-					return fmt.Errorf("Failed updating sold lifecycle for %s: %s", listedRIID, err.Error())
+				// this is the only place "sold" lifecycle status is being set
+				// updating reservation sold status
+				reservation := models.Reservations{
+					ReservationID: r.ReservationID,
+					SellSplitted:  false,
+					Sold:          true,
 				}
+				reservations = append(reservations, reservation)
 			}
 		}
 
 		if unitsSoldAssertion != unitsSold {
-			debug.Println("Failed assertion for sell events on listing:", listingID)
+			debug.Printf("Failed assertion for sell events on listing %s. Should happen only in first iteration\n", listingID)
 			return nil
 		}
 	}
 
-	// TODO: check rolling back actually works
+	listingPublishDate := parseDate((*values)["created_date"])
+	const oneMonthDuration = time.Hour * 24 * 30
+	listingTotalTerms := int64(len(priceSchedules))
+	// check if total terms duration covers remaining reservation life
+	expectedDurationTerms := reservationOriginalExpirationDate.Sub(
+		listingPublishDate).Truncate(oneMonthDuration)
+	expectedTerms := int64(expectedDurationTerms / time.Hour / 24 / 30)
+	if expectedTerms != listingTotalTerms {
+		// TODO: fix this
+		debug.Println("Failed assertion. Got more terms than expected. Should happen only in first iteration")
+		return nil
+		//return fmt.Errorf("Failed assertion. Got more terms than expected")
+	}
+
 	return DB.RunInTransaction(func(tx *pg.Tx) error {
 		for _, priceSchedule := range priceSchedules {
 			hoursTillExpiration := *priceSchedule.Term * 24 * 30
@@ -556,27 +490,23 @@ func InsertIntoPGReservationsListingsTerms(values *prometheus.Labels, unitsSold 
 				termStartDate = listingPublishDate
 			}
 
-			var unitsSold uint16
-			for event, count := range sellEvents {
-				if termStartDate.Before(event) && termEndDate.After(event) {
-					unitsSold += count
-				}
-			}
-
 			listingPrices := models.ReservationsListingsTerms{
 				ListingID:    listingID,
 				StartDate:    termStartDate,
 				EndDate:      termEndDate,
-				UnitsSold:    unitsSold,
 				UpfrontPrice: uint64(*priceSchedule.Price * 1000000000),
 			}
 			if err = upsert(&listingPrices, &[]string{"listing_id", "start_date"},
-				&[]string{"units_sold", "updated_at"}); err != nil {
-				debug.Printf(
-					"failed updating terms for listing %s. probably because of missing information in the tables: %s\n",
-					listingID, err.Error())
-				return nil
+				&[]string{"updated_at"}); err != nil {
+				return err
 			}
+		}
+		if unitsSold > 0 {
+			if _, err := DB.Model(&reservations).Column("sell_splitted").Column(
+				"sold").WherePK().Update(); err != nil {
+				return err
+			}
+			return upsert(&sellEvents, &[]string{"reservation_id"}, &[]string{"updated_at"})
 		}
 		return nil
 	})

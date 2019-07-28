@@ -16,10 +16,10 @@ type BillingTable interface {
 
 // Enums a map for enums used in database
 // used in createEnums(migrations.DB) and destroyEnums(migrations.DB) functions
+// TODO: use enums in go
 var Enums = map[string][]string{
 	"instance_lifecycle":         []string{"normal", "spot"},
 	"instance_state":             []string{"pending", "running", "shutting-down", "rebooting", "terminated", "stopping", "stopped"},
-	"reservation_lifecycle":      []string{"canceled", "converted", "sell_splitted", "sold", "unchanged", "unknown"},
 	"reservation_listing_state":  []string{"available", "cancelled", "pending", "sold"},
 	"reservation_listing_status": []string{"active", "cancelled", "closed", "pending"},
 	"reservation_offer_class":    []string{"convertible", "scheduled", "standard"},
@@ -167,14 +167,14 @@ var reservationsChecks = map[string]string{
 	"type_match_family": `substring(instance_type from '(.+)\..+') = family`,
 }
 
-var reservationsForeignKeys = map[string]string{
-	//"listed_on": "reservations_listings(listing_id) ON DELETE RESTRICT",
-}
+var reservationsForeignKeys = map[string]string{}
 
 // Reservations holds information for reserved instances
 type Reservations struct {
 	ReservationID    uuid.UUID   `sql:"type:uuid,pk"`
 	Az               string      `sql:"type:varchar(15)"`
+	Canceled         bool        `sql:"default:false,notnull"`
+	Converted        bool        `sql:"default:false,notnull"`
 	Count            uint16      `sql:",notnull"`
 	CreatedAt        time.Time   `sql:"default:now(),notnull"`
 	Duration         int32       `sql:",notnull"`
@@ -182,14 +182,16 @@ type Reservations struct {
 	EndDate          time.Time   `sql:",notnull"`
 	Family           string      `sql:"type:varchar(4),notnull"`
 	InstanceType     string      `sql:"type:varchar(13),notnull"`
-	Lifecycle        []string    `sql:"type:reservation_lifecycle[],array,notnull"`
 	ListedOn         []uuid.UUID `sql:"type:uuid[],array"`
 	OfferClass       string      `sql:"type:reservation_offer_class,notnull"`
 	OfferType        string      `sql:"type:reservation_offer_type,notnull"`
+	OriginalEndDate  time.Time   `sql:",notnull"`
 	Product          string      `sql:"type:varchar(37),notnull"`
 	RecurringCharges uint64      `sql:",notnull"`
 	Region           string      `sql:"type:varchar(14),notnull"`
 	Scope            string      `sql:"type:reservation_scope,notnull"`
+	SellSplitted     bool        `sql:"default:false,notnull"`
+	Sold             bool        `sql:"default:false,notnull"`
 	StartDate        time.Time   `sql:",notnull"`
 	State            string      `sql:"type:reservation_state,notnull"`
 	Tenancy          string      `sql:"type:reservation_tenancy,notnull"`
@@ -321,7 +323,7 @@ func (r *ReservationsListings) GetTableForeignKeys() *map[string]string {
 }
 
 // -------------------------------------------------------------
-// ------------- reservations_listings_prices table ------------
+// ------------- reservations_listings_terms table -------------
 // -------------------------------------------------------------
 
 var reservationsListingTermsIndexes = map[string]string{
@@ -329,19 +331,19 @@ var reservationsListingTermsIndexes = map[string]string{
 }
 
 var reservationsListingsTermsChecks = map[string]string{
-	"dates": `start_date >= '2009-03-12'
+	"dates": `start_date >= '2012-09-12'
 			  AND updated_at >= created_at
+			  AND end_date > start_date
 			  AND end_date <= now() + interval '3 years'`,
 	"term_length": "end_date <= start_date + interval '30 days'",
 }
 
 var reservationsListingTermsForeignKeys = map[string]string{}
 
-// ReservationsListingsTerms holds listing terms history, price and number of sold instances
+// ReservationsListingsTerms holds listing terms history
 type ReservationsListingsTerms struct {
 	ListingID    uuid.UUID `sql:"type:uuid,pk"`
 	StartDate    time.Time `sql:",pk"`
-	UnitsSold    uint16    `sql:",notnull"`
 	CreatedAt    time.Time `sql:"default:now(),notnull"`
 	EndDate      time.Time `sql:",notnull"`
 	UpdatedAt    time.Time `sql:"default:now(),notnull"`
@@ -366,6 +368,56 @@ func (r *ReservationsListingsTerms) GetTableChecks() *map[string]string {
 // GetTableForeignKeys returns table foreign keys constraints
 func (r *ReservationsListingsTerms) GetTableForeignKeys() *map[string]string {
 	return &reservationsListingTermsForeignKeys
+}
+
+// -------------------------------------------------------------
+// --------------- reservations_sell_events table --------------
+// -------------------------------------------------------------
+
+var reservationsSellEventsIndexes = map[string]string{
+	"listing_id": "(listing_id)",
+	"sold_date":  "(sold_date)",
+}
+
+var reservationsSellEventsChecks = map[string]string{
+	"dates": `sold_date >= '2012-09-12'
+			  AND created_at > sold_date
+			  AND updated_at >= created_at`,
+	"units_sold": "units_sold > 0",
+}
+
+var reservationsSellEventsForeignKeys = map[string]string{
+	"reservation_id": "reservations(reservation_id) ON DELETE RESTRICT",
+}
+
+// ReservationsSellEvents holds dates and numbers of sold RIs
+type ReservationsSellEvents struct {
+	ReservationID uuid.UUID `sql:"type:uuid,pk"`
+	CreatedAt     time.Time `sql:"default:now(),notnull"`
+	ListingID     uuid.UUID `sql:"type:uuid"`
+	SoldDate      time.Time `sql:",notnull"`
+	UnitsSold     uint16    `sql:",notnull"`
+	UpdatedAt     time.Time `sql:"default:now(),notnull"`
+}
+
+// GetTableName returns table name
+func (r *ReservationsSellEvents) GetTableName() string {
+	return "reservations_sell_events"
+}
+
+// GetTableIndexes returns table indexes
+func (r *ReservationsSellEvents) GetTableIndexes() *map[string]string {
+	return &reservationsSellEventsIndexes
+}
+
+// GetTableChecks returns table check constraints
+func (r *ReservationsSellEvents) GetTableChecks() *map[string]string {
+	return &reservationsSellEventsChecks
+}
+
+// GetTableForeignKeys returns table foreign keys constraints
+func (r *ReservationsSellEvents) GetTableForeignKeys() *map[string]string {
+	return &reservationsSellEventsForeignKeys
 }
 
 // -------------------------------------------------------------

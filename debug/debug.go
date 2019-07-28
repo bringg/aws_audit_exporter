@@ -1,23 +1,23 @@
 package debug
 
-import "fmt"
+import "log"
 
 var Enabled bool
 
 func Printf(s string, a ...interface{}) {
 	if Enabled {
-		fmt.Printf(s, a...)
+		log.Printf(s, a...)
 	}
 }
 
 func Println(a ...interface{}) {
 	if Enabled {
-		fmt.Println(a)
+		log.Println(a...)
 	}
 }
 
 func Print(a ...interface{}) {
 	if Enabled {
-		fmt.Print(a)
+		log.Print(a...)
 	}
 }
