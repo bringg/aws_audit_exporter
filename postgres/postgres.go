@@ -229,6 +229,7 @@ func InsertIntoPGReservationsRelations(modifications *[]*ec2.ReservedInstancesMo
 			// not checking for error, since validity was checked already in InsertIntoPGReservations
 			reservationUUID, _ := uuid.Parse(*r.ReservedInstancesId)
 			reservation := models.Reservations{ReservationID: reservationUUID}
+			reservation.UpdatedAt = time.Now()
 			reservation.OriginalEndDate, err = getOriginalReservationExpirationDate(r)
 			if err != nil {
 				return fmt.Errorf("Failed calling getOriginalReservationExpirationDate for %s: %s",
@@ -242,10 +243,9 @@ func InsertIntoPGReservationsRelations(modifications *[]*ec2.ReservedInstancesMo
 				reservation.Canceled = true
 			}
 			reservations = append(reservations, reservation)
-			debug.Println(r.Start, reservation.OriginalEndDate)
 		}
 		_, err = DB.Model(&reservations).Column("canceled").Column("converted").Column(
-			"original_end_date").WherePK().Update()
+			"original_end_date").Column("updated_at").WherePK().Update()
 		return err
 	})
 }
@@ -306,7 +306,7 @@ func InsertIntoPGReservations(values *prometheus.Labels, RC float64, FP float64,
 	}
 
 	return upsert(&reservation, &[]string{"reservation_id"},
-		&[]string{"state", "updated_at", "listed_on"})
+		&[]string{"end_date", "listed_on", "state", "updated_at"})
 }
 
 // InsertIntoPGReservationsListings responsible for updating reservations listings table
@@ -421,7 +421,8 @@ func InsertIntoPGReservationsListingsSales(values *prometheus.Labels, totalUnits
 	if err = DB.Model(&listedRI).Where("reservation_id = ?", listedRIID).Select(); err != nil {
 		return fmt.Errorf("Failed fetching listed reservation %s: %s", listedRIID, err.Error())
 	}
-	reservationOriginalExpirationDate := listedRI.OriginalEndDate
+	listedReservationOriginalExpirationDate := listedRI.OriginalEndDate
+	listedReservationStartDate := listedRI.StartDate
 
 	// calculating sell events
 	sellEvents := []models.ReservationsSellEvents{}
@@ -429,8 +430,8 @@ func InsertIntoPGReservationsListingsSales(values *prometheus.Labels, totalUnits
 	var reservations []models.Reservations
 	if totalUnitsSold > 0 {
 		var reservationsInListing []models.Reservations
-		numResults, err := DB.Model(&reservationsInListing).Where(
-			"? = ANY (listed_on)", listingID).Order("end_date").SelectAndCount()
+		numResults, err := DB.Model(&reservationsInListing).Where("? = ANY (listed_on)", listingID).Where(
+			"start_date >= ?", listedReservationStartDate).Order("end_date").SelectAndCount()
 		if err != nil {
 			return fmt.Errorf("Failed getting reservations that belongs to this listing: %s", err.Error())
 		}
@@ -445,20 +446,20 @@ func InsertIntoPGReservationsListingsSales(values *prometheus.Labels, totalUnits
 				sold := reservationsInListing[i].Count - reservationsInListing[i+1].Count
 				sellEvent.ReservationID = reservationsInListing[i].ReservationID
 				sellEvent.UnitsSold = sold
-				sellEvent.SoldDate = reservationsInListing[i].EndDate
+				sellEvent.SoldDate = reservationsInListing[i+1].StartDate
 				sellEvents = append(sellEvents, sellEvent)
-				// updating reservation sell_splitted status
+				// this is the only place "sell_splitted" lifecycle status is being set
 				reservation := models.Reservations{
 					ReservationID: reservationsInListing[i].ReservationID,
 					SellSplitted:  true,
-					Sold:          false,
+					UpdatedAt:     time.Now(),
 				}
 				reservations = append(reservations, reservation)
 				unitsSold += sold
 			}
 			youngestSold := reservationsInListing[youngestDescendntIndex].EndDate.Add(
-				time.Second).Before(reservationOriginalExpirationDate)
-			if youngestSold {
+				time.Second).Before(listedReservationOriginalExpirationDate)
+			if youngestSold && unitsSold < totalUnitsSold {
 				r := reservationsInListing[youngestDescendntIndex]
 				sold := r.Count
 				sellEvent.ReservationID = r.ReservationID
@@ -466,13 +467,16 @@ func InsertIntoPGReservationsListingsSales(values *prometheus.Labels, totalUnits
 				sellEvent.SoldDate = r.EndDate
 				sellEvents = append(sellEvents, sellEvent)
 				// this is the only place "sold" lifecycle status is being set
-				// updating reservation sold status
 				reservation := models.Reservations{
 					ReservationID: r.ReservationID,
-					SellSplitted:  false,
 					Sold:          true,
+					UpdatedAt:     time.Now(),
 				}
 				reservations = append(reservations, reservation)
+				unitsSold += sold
+			}
+			if totalUnitsSold != unitsSold {
+				return fmt.Errorf("Failed assertion for sell events on listing %s", listingID)
 			}
 		}
 	}
@@ -486,7 +490,7 @@ func InsertIntoPGReservationsListingsSales(values *prometheus.Labels, totalUnits
 		for _, priceSchedule := range priceSchedules {
 			hoursTillExpiration := *priceSchedule.Term * 24 * 365 / 12
 			duration, _ := time.ParseDuration(fmt.Sprintf("%dh", hoursTillExpiration))
-			termEndDate := reservationOriginalExpirationDate.Add(-duration)
+			termEndDate := listedReservationOriginalExpirationDate.Add(-duration)
 			termStartDate := termEndDate.Add(-oneMonthDuration)
 			if *priceSchedule.Term == listingTotalTerms {
 				termStartDate = listingPublishDate
@@ -505,7 +509,7 @@ func InsertIntoPGReservationsListingsSales(values *prometheus.Labels, totalUnits
 		}
 		if totalUnitsSold > 0 {
 			if _, err := DB.Model(&reservations).Column("sell_splitted").Column(
-				"sold").WherePK().Update(); err != nil {
+				"sold").Column("updated_at").WherePK().Update(); err != nil {
 				return err
 			}
 			return upsert(&sellEvents, &[]string{"reservation_id"}, &[]string{"updated_at"})
