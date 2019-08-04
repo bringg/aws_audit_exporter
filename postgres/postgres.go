@@ -206,7 +206,7 @@ func InsertIntoPGReservationsRelations(modifications *[]*ec2.ReservedInstancesMo
 			}
 			var listedReservations []models.Reservations
 			if err = DB.Model(&listedReservations).Where(
-				"? = ANY (listed_on)", listing.ReservedInstancesListingId).Order("end_date").Select(); err != nil {
+				"? = ANY (listed_on)", listing.ReservedInstancesListingId).Order("start_date").Select(); err != nil {
 				return fmt.Errorf("Failed fetching reservations for listing %s: %s",
 					*listing.ReservedInstancesListingId, err.Error())
 			}
@@ -358,7 +358,10 @@ func getOriginalReservationExpirationDate(r *ec2.ReservedInstances) (time.Time, 
 	reservationID, _ := uuid.Parse(*r.ReservedInstancesId)
 	// look for oldest parent
 	oldestParent := models.Reservations{ReservationID: reservationID}
-	for {
+	for i := 0; ; i++ {
+		if i > 50 {
+			return time.Time{}, fmt.Errorf("Too many iterations for finding oldest parent")
+		}
 		temp := models.Reservations{}
 		err = DB.Model(&temp).Join(
 			"JOIN reservations_relations r ON reservations.reservation_id = r.parent_id").Where(
@@ -378,11 +381,14 @@ func getOriginalReservationExpirationDate(r *ec2.ReservedInstances) (time.Time, 
 
 	// search all siblings and descendants for latest expiration date
 	youngestDescendnt := models.Reservations{ReservationID: reservationID}
-	for {
+	for i := 0; ; i++ {
+		if i > 50 {
+			return time.Time{}, fmt.Errorf("Too many iterations for finding youngest descendant")
+		}
 		temp := models.Reservations{}
 		err = DB.Model(&temp).Join(
 			"JOIN reservations_relations r ON reservations.reservation_id = r.reservation_id").Where(
-			"r.parent_id = ?", youngestDescendnt.ReservationID).Order("original_end_date ASC").Limit(1).Select()
+			"r.parent_id = ?", youngestDescendnt.ReservationID).Order("start_date ASC").Limit(1).Select()
 		if err != nil {
 			if err.Error() != "pg: no rows in result set" {
 				return time.Time{}, fmt.Errorf("Failed fetching youngest descendant: %s", err.Error())

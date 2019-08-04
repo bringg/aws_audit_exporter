@@ -49,7 +49,6 @@ func init() {
 			return err
 		}
 		debug.Println("destroying all enums")
-		err := destroyEnums(db)
-		return err
+		return destroyEnums(db)
 	})
 }
