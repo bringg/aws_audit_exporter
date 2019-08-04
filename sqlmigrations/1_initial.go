@@ -12,6 +12,9 @@ import (
 )
 
 func init() {
+	// Do not look for SQL files
+	migrations.DefaultCollection.DisableSQLAutodiscover(true)
+
 	migrations.MustRegisterTx(func(db migrations.DB) error {
 		debug.Println("creating DB schema")
 		debug.Println("creating custom enum types")
