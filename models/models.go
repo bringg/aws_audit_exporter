@@ -335,7 +335,7 @@ var reservationsListingsTermsChecks = map[string]string{
 			  AND updated_at >= created_at
 			  AND end_date > start_date
 			  AND end_date <= now() + interval '3 years'`,
-	"term_length": "end_date <= start_date + interval '30 days'",
+	"term_length": "end_date <= start_date + interval '31 days'",
 }
 
 var reservationsListingTermsForeignKeys = map[string]string{}

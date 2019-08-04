@@ -154,7 +154,7 @@ func GetReservationsInfo(svc *ec2.EC2) {
 	reservedInstances := resp.ReservedInstances
 	// oldest reservation in the sysetm will be first to get processed
 	sort.Slice(reservedInstances, func(i, j int) bool {
-		return reservedInstances[i].Start.After(*reservedInstances[j].Start)
+		return reservedInstances[i].Start.Before(*reservedInstances[j].Start)
 	})
 	for _, r := range reservedInstances {
 		labels["scope"] = *r.Scope
@@ -220,18 +220,19 @@ func GetReservationsInfo(svc *ec2.EC2) {
 		log.Fatal(err.Error())
 	}
 	modificationEvents := modresp.ReservedInstancesModifications
-
-	// write to db
-	if err := postgres.InsertIntoPGReservationsRelations(&modificationEvents); err != nil {
-		log.Println("There was an error calling InsertIntoPGReservationsRelations")
-		log.Fatal(err.Error())
-	}
-
+	// getting all listings
 	listings, err := getReservedInstancesListings(svc, nil)
 	if err != nil {
 		log.Println("there was an error calling getReservedInstancesListings", err.Error())
 		log.Fatal(err.Error())
 	}
+
+	// write to db
+	if err := postgres.InsertIntoPGReservationsRelations(&modificationEvents, &listings, &reservedInstances); err != nil {
+		log.Println("There was an error calling InsertIntoPGReservationsRelations")
+		log.Fatal(err.Error())
+	}
+
 	rilInstanceCount.Reset()
 	rilInstancePrice.Reset()
 	labels = prometheus.Labels{}

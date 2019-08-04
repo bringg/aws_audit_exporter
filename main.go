@@ -80,7 +80,7 @@ func main() {
 	app := cli.NewApp()
 
 	app.Name = "Prometheus AWS audit exporter"
-	app.Version = "0.2.0"
+	app.Version = "0.3.0"
 	app.Usage = "Assists with billing"
 	app.UsageText = "./aws_audit_exporter [global options] [command] [args]"
 

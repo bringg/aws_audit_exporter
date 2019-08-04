@@ -153,15 +153,22 @@ func InsertIntoPGSpotPrices(values *prometheus.Labels, RC float64) error {
 }
 
 // InsertIntoPGReservationsRelations responsible for updating reservations relations information.
-// also updates reservation lifecycle, and original expiration (end)) date
-func InsertIntoPGReservationsRelations(modifications *[]*ec2.ReservedInstancesModification) error {
+// also sets "converted" and "canceled" statuses, and original expiration (end) date
+func InsertIntoPGReservationsRelations(modifications *[]*ec2.ReservedInstancesModification,
+	listings *[]*ec2.ReservedInstancesListing, reservedInstances *[]*ec2.ReservedInstances) error {
 	// exist silently if database was not initialized or there are no modifications
 	if DB == nil || modifications == nil || len(*modifications) == 0 {
 		return nil
 	}
 
+	var err error
 	var relations []models.ReservationsRelations
-	var reservationsUUID []uuid.UUID
+	// a map that hold "converted" status for reservations
+	reservationsConvertedStatus := funk.Map(*reservedInstances, func(r *ec2.ReservedInstances) (uuid.UUID, bool) {
+		// not checking for error, since validity was checked already in InsertIntoPGReservations
+		reservationUUID, _ := uuid.Parse(*r.ReservedInstancesId)
+		return reservationUUID, false
+	}).(map[uuid.UUID]bool)
 	return DB.RunInTransaction(func(tx *pg.Tx) error {
 		// taking care of midifications
 		for _, modification := range *modifications {
@@ -169,26 +176,14 @@ func InsertIntoPGReservationsRelations(modifications *[]*ec2.ReservedInstancesMo
 				continue
 			}
 			for _, parent := range modification.ReservedInstancesIds {
-				parentUUID, err := uuid.Parse(*parent.ReservedInstancesId)
-				if err != nil {
-					return fmt.Errorf("Failed parsing parentUUID: %s", err.Error())
-				}
-				if len(modification.ReservedInstancesIds) == 12 {
-					fmt.Println(parentUUID)
-				}
-				// saving parent reservation uuid
-				reservationsUUID = append(reservationsUUID, parentUUID)
+				parentUUID, _ := uuid.Parse(*parent.ReservedInstancesId)
+				// updating parent reservation "converted" status
+				reservationsConvertedStatus[parentUUID] = true
 				for _, child := range modification.ModificationResults {
 					// updating child converted status
-					childUUID, err := uuid.Parse(*child.ReservedInstancesId)
-					if err != nil {
-						return fmt.Errorf("Failed parsing childUUID: %s", err.Error())
-					}
-					if len(modification.ReservedInstancesIds) == 12 {
-						fmt.Println(childUUID)
-					}
-					// saving child reservation uuid
-					reservationsUUID = append(reservationsUUID, childUUID)
+					childUUID, _ := uuid.Parse(*child.ReservedInstancesId)
+					// updating child reservation "converted" status
+					reservationsConvertedStatus[childUUID] = true
 					// updating relation
 					relation := models.ReservationsRelations{
 						ParentID:      parentUUID,
@@ -198,21 +193,60 @@ func InsertIntoPGReservationsRelations(modifications *[]*ec2.ReservedInstancesMo
 				}
 			}
 		}
-		reservationsUUID = funk.Uniq(reservationsUUID).([]uuid.UUID)
-		reservations := funk.Map(reservationsUUID, func(u uuid.UUID) models.Reservations {
-			return models.Reservations{
-				ReservationID: u,
-				Canceled:      false,
-				Converted:     true,
+		// taking care of reservations that were splitted after some were sold
+		var seenListings []uuid.UUID
+		for _, listing := range *listings {
+			listingUUID, err := uuid.Parse(*listing.ReservedInstancesListingId)
+			if err != nil {
+				return fmt.Errorf("Failed parsing listing %s UUID: %s",
+					*listing.ReservedInstancesListingId, err.Error())
 			}
-		}).([]models.Reservations)
-
-		if _, err := DB.Model(&reservations).Column("converted").WherePK().Update(); err != nil {
-			return err
+			if funk.Contains(seenListings, listingUUID) {
+				continue
+			}
+			var listedReservations []models.Reservations
+			if err = DB.Model(&listedReservations).Where(
+				"? = ANY (listed_on)", listing.ReservedInstancesListingId).Order("start_date").Select(); err != nil {
+				return fmt.Errorf("Failed fetching reservations for listing %s: %s",
+					*listing.ReservedInstancesListingId, err.Error())
+			}
+			seenListings = append(seenListings, listedReservations[0].ListedOn...)
+			for i := 0; i < len(listedReservations)-1; i++ {
+				// updating relation
+				relation := models.ReservationsRelations{
+					ParentID:      listedReservations[i].ReservationID,
+					ReservationID: listedReservations[i+1].ReservationID,
+				}
+				relations = append(relations, relation)
+			}
 		}
-		// TODO: taking care of reservations that were splitted after some were sold
-
-		return upsert(&relations, &[]string{"parent_id", "reservation_id"}, &[]string{"updated_at"})
+		if err = upsert(&relations, &[]string{"parent_id", "reservation_id"}, &[]string{"updated_at"}); err != nil {
+			return fmt.Errorf("Failed updating reservations relations: %s", err.Error())
+		}
+		// updating reservations "converted" and "canceled" statuses and original expiration (end) date
+		var reservations []models.Reservations
+		for _, r := range *reservedInstances {
+			// not checking for error, since validity was checked already in InsertIntoPGReservations
+			reservationUUID, _ := uuid.Parse(*r.ReservedInstancesId)
+			reservation := models.Reservations{ReservationID: reservationUUID}
+			reservation.UpdatedAt = time.Now()
+			reservation.OriginalEndDate, err = getOriginalReservationExpirationDate(r)
+			if err != nil {
+				return fmt.Errorf("Failed calling getOriginalReservationExpirationDate for %s: %s",
+					reservationUUID, err.Error())
+			}
+			if reservationsConvertedStatus[reservationUUID] {
+				reservation.Converted = true
+				reservation.Canceled = false
+			} else if r.Start.Add(time.Second).Equal(*r.End) {
+				// assuming canceled instances always lives for one second (once aws processing finished)
+				reservation.Canceled = true
+			}
+			reservations = append(reservations, reservation)
+		}
+		_, err = DB.Model(&reservations).Column("canceled").Column("converted").Column(
+			"original_end_date").Column("updated_at").WherePK().Update()
+		return err
 	})
 }
 
@@ -226,7 +260,7 @@ func InsertIntoPGReservations(values *prometheus.Labels, RC float64, FP float64,
 
 	count, err := strconv.ParseInt((*values)["count"], 10, 16)
 	if err != nil {
-		return fmt.Errorf("Failed parsing count: %v", err)
+		return fmt.Errorf("Failed parsing count: %s", err.Error())
 	}
 	duration, err := strconv.ParseInt((*values)["duration"], 10, 32)
 	if err != nil {
@@ -245,18 +279,20 @@ func InsertIntoPGReservations(values *prometheus.Labels, RC float64, FP float64,
 		}
 		listingsUUIDs = append(listingsUUIDs, listingUUID)
 	}
+	endDate := parseDate((*values)["end_date"])
 
 	reservation := models.Reservations{
 		Az:               (*values)["az"],
 		Count:            uint16(count),
 		Duration:         int32(duration),
 		EffectivePrice:   uint64(EP * 1000000000),
-		EndDate:          parseDate((*values)["end_date"]),
+		EndDate:          endDate,
 		Family:           (*values)["family"],
 		InstanceType:     (*values)["instance_type"],
 		ListedOn:         listingsUUIDs,
 		OfferClass:       (*values)["offer_class"],
 		OfferType:        (*values)["offer_type"],
+		OriginalEndDate:  endDate,
 		Product:          (*values)["product"],
 		RecurringCharges: uint64(RC * 1000000000),
 		Region:           (*values)["region"],
@@ -269,19 +305,8 @@ func InsertIntoPGReservations(values *prometheus.Labels, RC float64, FP float64,
 		UpfrontPrice:     uint64(FP * 1000000000),
 	}
 
-	// assuming canceled instances always lives for one second (once aws processing finished)
-	// will be overridden if instance was converted
-	if reservation.StartDate.Add(time.Second).Equal(reservation.EndDate) {
-		reservation.Canceled = true
-	}
-
-	reservation.OriginalEndDate, err = getOriginalReservationExpirationDate(&reservation)
-	if err != nil {
-		return fmt.Errorf("Failed calling getOriginalReservationExpirationDate: %s", err.Error())
-	}
-
-	return upsert(&reservation, &[]string{"reservation_id"}, &[]string{
-		"state", "updated_at", "original_end_date"})
+	return upsert(&reservation, &[]string{"reservation_id"},
+		&[]string{"end_date", "listed_on", "state", "updated_at"})
 }
 
 // InsertIntoPGReservationsListings responsible for updating reservations listings table
@@ -318,30 +343,25 @@ func InsertIntoPGReservationsListings(values *prometheus.Labels, count uint16) e
 
 // getOriginalReservationExpirationDate returns original reservation expiration date
 // might not be accurate for historical data, but should be accurate for new one
-func getOriginalReservationExpirationDate(r *models.Reservations) (time.Time, error) {
+func getOriginalReservationExpirationDate(r *ec2.ReservedInstances) (time.Time, error) {
 	// all members in the dinesty share the same duration
-	duration, err := time.ParseDuration(fmt.Sprintf("%ds", r.Duration))
+	duration, err := time.ParseDuration(fmt.Sprintf("%ds", *r.Duration))
 	if err != nil {
 		return time.Time{}, fmt.Errorf("Failed parsing duration: %s", err.Error())
 	}
 	// if true, always accurate
-	if r.State != "retired" || r.StartDate.Add(duration).Add(-time.Second).Equal(r.EndDate) {
-		return r.EndDate, nil
-	}
-	// if not the first time seeing this reservation, update with info saved in database
-	err = DB.Model(r).WherePK().Select()
-	if err != nil {
-		// first time. will wait for next iteration to get more accurate information
-		if err.Error() == "pg: no rows in result set" {
-			return r.EndDate, nil
-		}
-		return time.Time{}, fmt.Errorf("Failed fetching reservation info from database: %s",
-			err.Error())
+	if *r.State != "retired" || r.Start.Add(duration).Add(-time.Second).Equal(*r.End) {
+		return *r.End, nil
 	}
 
+	// not checking for err since it was validated before in InsertIntoPGReservations
+	reservationID, _ := uuid.Parse(*r.ReservedInstancesId)
 	// look for oldest parent
-	oldestParent := r
-	for {
+	oldestParent := models.Reservations{ReservationID: reservationID}
+	for i := 0; ; i++ {
+		if i > 50 {
+			return time.Time{}, fmt.Errorf("Too many iterations for finding oldest parent")
+		}
 		temp := models.Reservations{}
 		err = DB.Model(&temp).Join(
 			"JOIN reservations_relations r ON reservations.reservation_id = r.parent_id").Where(
@@ -352,27 +372,30 @@ func getOriginalReservationExpirationDate(r *models.Reservations) (time.Time, er
 			}
 			break
 		}
-		oldestParent = &temp
+		oldestParent = temp
 	}
-	if oldestParent == r {
+	if oldestParent.ReservationID == reservationID {
 		// no parents, result will be accurate
-		return r.StartDate.Add(duration).Add(-time.Second), nil
+		return r.Start.Add(duration).Add(-time.Second), nil
 	}
 
 	// search all siblings and descendants for latest expiration date
-	youngestDescendnt := r
-	for {
+	youngestDescendnt := models.Reservations{ReservationID: reservationID}
+	for i := 0; ; i++ {
+		if i > 50 {
+			return time.Time{}, fmt.Errorf("Too many iterations for finding youngest descendant")
+		}
 		temp := models.Reservations{}
 		err = DB.Model(&temp).Join(
 			"JOIN reservations_relations r ON reservations.reservation_id = r.reservation_id").Where(
-			"r.parent_id = ?", youngestDescendnt.ReservationID).Order("original_end_date ASC").Limit(1).Select()
+			"r.parent_id = ?", youngestDescendnt.ReservationID).Order("start_date ASC").Limit(1).Select()
 		if err != nil {
 			if err.Error() != "pg: no rows in result set" {
 				return time.Time{}, fmt.Errorf("Failed fetching youngest descendant: %s", err.Error())
 			}
 			break
 		}
-		youngestDescendnt = &temp
+		youngestDescendnt = temp
 	}
 
 	// this result might not be accurate, but should not stray in more than an hour
@@ -385,7 +408,7 @@ func getOriginalReservationExpirationDate(r *models.Reservations) (time.Time, er
 
 // InsertIntoPGReservationsListingsSales responsible for updating sales information
 // writes to reservations_listings_terms and reservations_sell_events tables
-func InsertIntoPGReservationsListingsSales(values *prometheus.Labels, unitsSold uint16,
+func InsertIntoPGReservationsListingsSales(values *prometheus.Labels, totalUnitsSold uint16,
 	priceSchedules []*ec2.PriceSchedule) error {
 	// exist silently if database was not initialized
 	if DB == nil {
@@ -404,87 +427,76 @@ func InsertIntoPGReservationsListingsSales(values *prometheus.Labels, unitsSold 
 	if err = DB.Model(&listedRI).Where("reservation_id = ?", listedRIID).Select(); err != nil {
 		return fmt.Errorf("Failed fetching listed reservation %s: %s", listedRIID, err.Error())
 	}
-	reservationOriginalExpirationDate := listedRI.OriginalEndDate
+	listedReservationOriginalExpirationDate := listedRI.OriginalEndDate
+	listedReservationStartDate := listedRI.StartDate
 
 	// calculating sell events
 	sellEvents := []models.ReservationsSellEvents{}
 	sellEvent := models.ReservationsSellEvents{ListingID: listingID}
 	var reservations []models.Reservations
-	if unitsSold > 0 {
+	if totalUnitsSold > 0 {
 		var reservationsInListing []models.Reservations
-		numResults, err := DB.Model(&reservationsInListing).Where(
-			"? = ANY (listed_on)", listingID).Order("end_date").SelectAndCount()
+		numResults, err := DB.Model(&reservationsInListing).Where("? = ANY (listed_on)", listingID).Where(
+			"start_date >= ?", listedReservationStartDate).Order("end_date").SelectAndCount()
 		if err != nil {
 			return fmt.Errorf("Failed getting reservations that belongs to this listing: %s", err.Error())
 		}
 		// calculating sold events
-		var unitsSoldAssertion uint16
+		var unitsSold uint16
 		switch numResults {
 		case 0:
 			return fmt.Errorf("Did not find any reservations that belongs to this listing: %s", err.Error())
 		default:
 			youngestDescendntIndex := numResults - 1
-			for i := 0; i < youngestDescendntIndex; i++ {
+			for i := 0; i < youngestDescendntIndex && unitsSold < totalUnitsSold; i++ {
 				sold := reservationsInListing[i].Count - reservationsInListing[i+1].Count
 				sellEvent.ReservationID = reservationsInListing[i].ReservationID
 				sellEvent.UnitsSold = sold
-				sellEvent.SoldDate = reservationsInListing[i].EndDate
+				sellEvent.SoldDate = reservationsInListing[i+1].StartDate
 				sellEvents = append(sellEvents, sellEvent)
-				// updating reservation sell_splitted status
+				// this is the only place "sell_splitted" lifecycle status is being set
 				reservation := models.Reservations{
 					ReservationID: reservationsInListing[i].ReservationID,
 					SellSplitted:  true,
-					Sold:          false,
+					UpdatedAt:     time.Now(),
 				}
 				reservations = append(reservations, reservation)
-				unitsSoldAssertion += sold
+				unitsSold += sold
 			}
 			youngestSold := reservationsInListing[youngestDescendntIndex].EndDate.Add(
-				time.Second).Before(reservationOriginalExpirationDate)
-			if youngestSold {
+				time.Second).Before(listedReservationOriginalExpirationDate)
+			if youngestSold && unitsSold < totalUnitsSold {
 				r := reservationsInListing[youngestDescendntIndex]
 				sold := r.Count
 				sellEvent.ReservationID = r.ReservationID
 				sellEvent.UnitsSold = sold
 				sellEvent.SoldDate = r.EndDate
 				sellEvents = append(sellEvents, sellEvent)
-				unitsSoldAssertion += sold
 				// this is the only place "sold" lifecycle status is being set
-				// updating reservation sold status
 				reservation := models.Reservations{
 					ReservationID: r.ReservationID,
-					SellSplitted:  false,
 					Sold:          true,
+					UpdatedAt:     time.Now(),
 				}
 				reservations = append(reservations, reservation)
+				unitsSold += sold
+			}
+			if totalUnitsSold != unitsSold {
+				return fmt.Errorf("Failed assertion for sell events on listing %s", listingID)
 			}
 		}
-
-		if unitsSoldAssertion != unitsSold {
-			debug.Printf("Failed assertion for sell events on listing %s. Should happen only in first iteration\n", listingID)
-			return nil
-		}
 	}
 
+	// TODO: find out how this really works
+	const oneMonthDuration = time.Hour * 24 * 365 / 12
 	listingPublishDate := parseDate((*values)["created_date"])
-	const oneMonthDuration = time.Hour * 24 * 30
 	listingTotalTerms := int64(len(priceSchedules))
-	// check if total terms duration covers remaining reservation life
-	expectedDurationTerms := reservationOriginalExpirationDate.Sub(
-		listingPublishDate).Truncate(oneMonthDuration)
-	expectedTerms := int64(expectedDurationTerms / time.Hour / 24 / 30)
-	if expectedTerms != listingTotalTerms {
-		// TODO: fix this
-		debug.Println("Failed assertion. Got more terms than expected. Should happen only in first iteration")
-		return nil
-		//return fmt.Errorf("Failed assertion. Got more terms than expected")
-	}
 
 	return DB.RunInTransaction(func(tx *pg.Tx) error {
 		for _, priceSchedule := range priceSchedules {
-			hoursTillExpiration := *priceSchedule.Term * 24 * 30
+			hoursTillExpiration := *priceSchedule.Term * 24 * 365 / 12
 			duration, _ := time.ParseDuration(fmt.Sprintf("%dh", hoursTillExpiration))
-			termEndDate := reservationOriginalExpirationDate.Add(-duration)
+			termEndDate := listedReservationOriginalExpirationDate.Add(-duration)
 			termStartDate := termEndDate.Add(-oneMonthDuration)
 			if *priceSchedule.Term == listingTotalTerms {
 				termStartDate = listingPublishDate
@@ -501,9 +513,9 @@ func InsertIntoPGReservationsListingsSales(values *prometheus.Labels, unitsSold 
 				return err
 			}
 		}
-		if unitsSold > 0 {
+		if totalUnitsSold > 0 {
 			if _, err := DB.Model(&reservations).Column("sell_splitted").Column(
-				"sold").WherePK().Update(); err != nil {
+				"sold").Column("updated_at").WherePK().Update(); err != nil {
 				return err
 			}
 			return upsert(&sellEvents, &[]string{"reservation_id"}, &[]string{"updated_at"})
