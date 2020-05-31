@@ -5,7 +5,7 @@ go 1.12
 require (
 	github.com/aws/aws-sdk-go v1.21.1
 	github.com/go-pg/migrations v6.7.3+incompatible
-	github.com/go-pg/pg v8.0.4+incompatible
+	github.com/go-pg/pg v8.0.6+incompatible
 	github.com/google/uuid v1.1.1
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/kr/pretty v0.1.0 // indirect
