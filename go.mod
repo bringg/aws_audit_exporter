@@ -14,7 +14,7 @@ require (
 	github.com/prometheus/client_golang v1.0.0
 	github.com/thoas/go-funk v0.4.0
 	github.com/tidwall/gjson v1.3.2
-	github.com/urfave/cli v1.20.0
+	github.com/urfave/cli v1.22.4
 	golang.org/x/crypto v0.0.0-20190530122614-20be4c3c3ed5 // indirect
 	golang.org/x/net v0.0.0-20190420063019-afa5a82059c6 // indirect
 	golang.org/x/sys v0.0.0-20190422165155-953cdadca894 // indirect
