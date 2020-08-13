@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/EladDolev/aws_audit_exporter/postgres"
@@ -63,7 +64,7 @@ func (s *Instances) GetInstancesInfo() {
 	resp, err := s.Svc.DescribeInstances(&ec2.DescribeInstancesInput{})
 	if err != nil {
 		fmt.Println("There was an error listing instances")
-		log.Fatal(err.Error())
+		log.Fatal(err)
 	}
 
 	instancesCount.Reset()
@@ -113,16 +114,14 @@ func (s *Instances) GetInstancesInfo() {
 
 			units, err := strconv.ParseFloat(labels["units"], 64)
 			if err != nil {
-				log.Println("There was an error converting normalization units from string to float64")
-				log.Fatal(err.Error())
+				log.Fatal(errors.Wrap(err, "There was an error converting normalization units from string to float64"))
 			}
 
 			instancesNormalizationUnits.With(labels).Add(units)
 
 			// write to db
 			if err := postgres.InsertIntoPGInstances(&labels, tags); err != nil {
-				log.Println("There was an error calling insertIntoPGInstances for:", labels["instance_id"])
-				log.Fatal(err.Error())
+				log.Fatal(errors.Wrapf(err, "There was an error calling insertIntoPGInstances for: %s", labels["instance_id"]))
 			}
 		}
 	}

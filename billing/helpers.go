@@ -42,7 +42,7 @@ func IsClassicLink(svc *ec2.EC2) bool {
 	var err error
 	if resp, err = svc.DescribeVpcClassicLink(&ec2.DescribeVpcClassicLinkInput{}); err != nil {
 		fmt.Println("there was an error describing vpc")
-		log.Fatal(err.Error())
+		log.Fatal(err)
 	}
 
 	for _, r := range resp.Vpcs {
@@ -103,7 +103,7 @@ func getInstanceTypeDetails(instanceType string) (string, string) {
 		multiplier, err := strconv.Atoi(multiplierString)
 		if err != nil {
 			fmt.Println("there was an error in breaking instance type into family and units", err.Error())
-			log.Fatal(err.Error())
+			log.Fatal(err)
 		}
 		units = strconv.Itoa(8 * multiplier)
 	}

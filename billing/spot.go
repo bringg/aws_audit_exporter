@@ -1,13 +1,13 @@
 package billing
 
 import (
-	"fmt"
 	"log"
 	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/EladDolev/aws_audit_exporter/postgres"
@@ -94,8 +94,7 @@ func (s *Spots) GetSpotsInfo() {
 
 	resp, err := s.Svc.DescribeSpotInstanceRequests(&ec2.DescribeSpotInstanceRequestsInput{})
 	if err != nil {
-		fmt.Println("there was an error listing spot requests")
-		log.Fatal(err.Error())
+		log.Fatal(errors.Wrap(err, "there was an error listing spot requests"))
 	}
 
 	labels := prometheus.Labels{}
@@ -184,8 +183,7 @@ func GetSpotsCurrentPrices(svc *ec2.EC2, pList []*string) {
 						sphPrice.With(spLabels).Set(f)
 						// write to db
 						if err = postgres.InsertIntoPGSpotPrices(&spLabels, f); err != nil {
-							log.Println("There was an error calling insertIntoPGSpotPrices")
-							log.Fatal(err.Error())
+							log.Fatal(errors.Wrap(err, "There was an error calling insertIntoPGSpotPrices"))
 						}
 					}
 				}
@@ -194,7 +192,6 @@ func GetSpotsCurrentPrices(svc *ec2.EC2, pList []*string) {
 		})
 
 	if err != nil {
-		fmt.Println("there was an error listing spot requests")
-		log.Fatal(err.Error())
+		log.Fatal(errors.Wrap(err, "there was an error listing spot requests"))
 	}
 }

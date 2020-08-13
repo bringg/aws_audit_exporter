@@ -4,7 +4,7 @@ This program is primarily intended to assist with billing.
 Collects various AWS statistics, exports them as prometheus metrics, and saves them in RDBMS.
 
 Run help or check main.go for program parameters
-Debug messages are enabled by default
+Debug messages are disabled by default
 
 Currently the following metrics are exported:
 
