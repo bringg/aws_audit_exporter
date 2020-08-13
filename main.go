@@ -80,12 +80,12 @@ func main() {
 	app := cli.NewApp()
 
 	app.Name = "Prometheus AWS audit exporter"
-	app.Version = "0.3.0"
+	app.Version = "0.3.1"
 	app.Usage = "Assists with billing"
 	app.UsageText = "./aws_audit_exporter [global options] [command] [args]"
 
 	app.Commands = []cli.Command{
-		cli.Command{
+		{
 			Name:            "migrate",
 			Usage:           "runs migrations on postgres database",
 			Description:     "https://github.com/go-pg/migrations#run-migrations",
@@ -125,7 +125,7 @@ func main() {
 			EnvVar:      "ADDR",
 			Destination: &options.addr,
 		},
-		cli.BoolTFlag{
+		cli.BoolFlag{
 			Name:        "debug",
 			Usage:       "Whether to print debug logs and SQL statements",
 			EnvVar:      "DEBUG",

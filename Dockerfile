@@ -1,4 +1,4 @@
-FROM golang:1.12-alpine as builder
+FROM golang:1.15-alpine as builder
 
 WORKDIR /tmp/aws_audit_exporter
 
@@ -9,8 +9,8 @@ RUN apk add --no-cache git \
 COPY . .
 RUN go install
 
-FROM alpine:3.10
-LABEL maintainer "Elad Dolev <dolevelad@gmail.com>"
+FROM alpine:3.12
+LABEL maintainer "Bringg Devops <devops@bringg.com>"
 
 EXPOSE 9190
 ENTRYPOINT ["aws_audit_exporter"]

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/EladDolev/aws_audit_exporter/postgres"
@@ -145,8 +146,7 @@ func GetReservationsInfo(svc *ec2.EC2) {
 
 	resp, err := svc.DescribeReservedInstances(&ec2.DescribeReservedInstancesInput{})
 	if err != nil {
-		log.Println("there was an error listing instances", err.Error())
-		log.Fatal(err.Error())
+		log.Fatal(errors.Wrap(err, "there was an error listing instances"))
 	}
 
 	ris := map[string]*ec2.ReservedInstances{}
@@ -182,8 +182,7 @@ func GetReservationsInfo(svc *ec2.EC2) {
 
 		units, err := strconv.ParseFloat(labels["units"], 64)
 		if err != nil {
-			log.Println("There was an error converting normalization units from string to float64")
-			log.Fatal(err.Error())
+			log.Fatal(errors.Wrap(err, "There was an error converting normalization units from string to float64"))
 		}
 		riTotalNormalizationUnits.With(labels).Add(float64(*r.InstanceCount * int64(units)))
 		// TODO: validate this is hourly !!
@@ -204,33 +203,28 @@ func GetReservationsInfo(svc *ec2.EC2) {
 		// there can be maximum two different RI ids in the array, one of which always point to itself
 		listings, err := getReservedInstancesListings(svc, r)
 		if err != nil {
-			log.Println("there was an error calling getReservedInstancesListings", err.Error())
-			log.Fatal(err.Error())
+			log.Fatal(errors.Wrap(err, "there was an error calling getReservedInstancesListings"))
 		}
 		// write to db
 		if err := postgres.InsertIntoPGReservations(&labels, RC, FP, effectivePrice, &listings); err != nil {
-			log.Println("There was an error calling InsertIntoPGReservations for:", labels["ri_id"])
-			log.Fatal(err.Error())
+			log.Fatal(errors.Wrapf(err, "There was an error calling InsertIntoPGReservations for: %s", labels["ri_id"]))
 		}
 	}
 	// looking for reservations modifications
 	modresp, err := svc.DescribeReservedInstancesModifications(&ec2.DescribeReservedInstancesModificationsInput{})
 	if err != nil {
-		log.Println("There was an error calling DescribeReservedInstancesModifications")
-		log.Fatal(err.Error())
+		log.Fatal(errors.Wrap(err, "There was an error calling DescribeReservedInstancesModifications"))
 	}
 	modificationEvents := modresp.ReservedInstancesModifications
 	// getting all listings
 	listings, err := getReservedInstancesListings(svc, nil)
 	if err != nil {
-		log.Println("there was an error calling getReservedInstancesListings", err.Error())
-		log.Fatal(err.Error())
+		log.Fatal(errors.Wrap(err, "there was an error calling getReservedInstancesListings"))
 	}
 
 	// write to db
 	if err := postgres.InsertIntoPGReservationsRelations(&modificationEvents, &listings, &reservedInstances); err != nil {
-		log.Println("There was an error calling InsertIntoPGReservationsRelations")
-		log.Fatal(err.Error())
+		log.Fatal(errors.Wrap(err, "There was an error calling InsertIntoPGReservationsRelations"))
 	}
 
 	rilInstanceCount.Reset()
@@ -271,15 +265,13 @@ func GetReservationsInfo(svc *ec2.EC2) {
 			}
 			// write to db
 			if err := postgres.InsertIntoPGReservationsListings(&labels, uint16(*ic.InstanceCount)); err != nil {
-				log.Println("There was an error calling InsertIntoPGReservationsListings for:", labels["ril_id"])
-				log.Fatal(err.Error())
+				log.Fatal(errors.Wrapf(err, "There was an error calling InsertIntoPGReservationsListings for: %s", labels["ril_id"]))
 			}
 			if labels["state"] == "sold" {
 				// write to db
 				if err := postgres.InsertIntoPGReservationsListingsSales(&labels,
 					uint16(*ic.InstanceCount), ril.PriceSchedules); err != nil {
-					log.Println("There was an error calling InsertIntoPGReservationsListingsSales for:", labels["ril_id"])
-					log.Fatal(err.Error())
+					log.Fatal(errors.Wrapf(err, "There was an error calling InsertIntoPGReservationsListingsSales for:", labels["ril_id"]))
 				}
 			}
 		}
