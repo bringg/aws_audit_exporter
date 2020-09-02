@@ -3,7 +3,7 @@ module github.com/EladDolev/aws_audit_exporter
 go 1.15
 
 require (
-	github.com/aws/aws-sdk-go v1.34.3
+	github.com/aws/aws-sdk-go v1.34.15
 	github.com/go-pg/migrations v6.7.3+incompatible
 	github.com/go-pg/pg v8.0.7+incompatible
 	github.com/google/uuid v1.1.1
