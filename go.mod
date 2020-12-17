@@ -11,7 +11,7 @@ require (
 	github.com/kr/pretty v0.2.1 // indirect
 	github.com/onsi/ginkgo v1.14.0 // indirect
 	github.com/pkg/errors v0.9.1
-	github.com/prometheus/client_golang v1.7.1
+	github.com/prometheus/client_golang v1.9.0
 	github.com/thoas/go-funk v0.7.0
 	github.com/urfave/cli v1.22.4
 	golang.org/x/crypto v0.0.0-20200728195943-123391ffb6de // indirect
