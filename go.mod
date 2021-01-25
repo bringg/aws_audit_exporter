@@ -6,7 +6,7 @@ require (
 	github.com/aws/aws-sdk-go v1.34.3
 	github.com/go-pg/migrations v6.7.3+incompatible
 	github.com/go-pg/pg v8.0.7+incompatible
-	github.com/google/uuid v1.1.1
+	github.com/google/uuid v1.2.0
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/kr/pretty v0.2.1 // indirect
 	github.com/onsi/ginkgo v1.14.0 // indirect
